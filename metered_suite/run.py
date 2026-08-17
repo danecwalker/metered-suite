@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .hash import SUITE_VERSION
+from .identity import build_command, resolve_harness, sku_fits
 from .score import score_json
 from .seal import seal_package
 from .tasks import load_tasks, suite_lock
@@ -27,17 +28,7 @@ def _slug(name: str) -> str:
 def _load_user_config(root: Path) -> dict:
     namespace: dict = {}
     exec((root / "main.py").read_text(encoding="utf-8"), namespace)
-    required = [
-        "HARNESS",
-        "EFFORT",
-        "COMMAND",
-        "MODEL_NAME",
-        "LAB",
-        "PROVIDER",
-        "SKU",
-        "LIST_INPUT",
-        "LIST_OUTPUT",
-    ]
+    required = ["HARNESS", "MODEL", "EFFORT"]
     missing = [key for key in required if key not in namespace]
     if missing:
         raise SystemExit(f"main.py is missing: {', '.join(missing)}")
@@ -108,7 +99,14 @@ def run_suite(root: Path | None = None) -> Path:
                         f"Previous answer:\n{output}\n"
                     )
                 prompt_file.write_text(prompt, encoding="utf-8")
-                command = _render_command(cfg["COMMAND"], prompt, prompt_file, cfg)
+                spec = resolve_harness(str(cfg["HARNESS"]))
+                flags = list(cfg.get("FLAGS") or [])
+                command = _render_command(
+                    build_command(spec, str(cfg["MODEL"]), flags),
+                    prompt,
+                    prompt_file,
+                    cfg,
+                )
                 env = os.environ.copy()
                 env["METERED_TASK"] = task.id
                 env["METERED_WORKSPACE"] = str(workspace)
@@ -123,7 +121,7 @@ def run_suite(root: Path | None = None) -> Path:
                 except FileNotFoundError as error:
                     raise SystemExit(
                         f"harness command not found: {command[0]}\n"
-                        "Edit COMMAND in main.py to the CLI on this machine."
+                        "Install that CLI, or change HARNESS in main.py."
                     ) from error
                 except subprocess.TimeoutExpired:
                     pass
@@ -149,31 +147,24 @@ def run_suite(root: Path | None = None) -> Path:
         print(f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s)")
 
     finished = datetime.now(timezone.utc).isoformat()
-    harness_slug = str(cfg["HARNESS"]).strip().lower()
-    harness_ids = {
-        "api": "hrs_api",
-        "chatgpt": "hrs_chatgpt",
-        "claude": "hrs_claude",
-        "grok": "hrs_grok",
-        "qwen": "hrs_qwen",
-        "pi": "hrs_pi",
-        "opencode": "hrs_opencode",
-        "custom": "hrs_custom",
-    }
+    spec = resolve_harness(str(cfg["HARNESS"]))
+    sku = str(cfg["MODEL"]).strip()
+    if not sku_fits(spec, sku):
+        raise SystemExit(
+            f"MODEL {sku} cannot be filed under the {spec['slug']} harness."
+        )
     stack = {
-        "modelName": cfg["MODEL_NAME"],
-        "modelSlug": _slug(cfg["MODEL_NAME"]),
-        "lab": cfg["LAB"],
-        "harnessId": harness_ids.get(harness_slug, f"hrs_{harness_slug}"),
-        "harnessSlug": harness_slug,
-        "provider": cfg["PROVIDER"],
-        "sku": cfg["SKU"],
-        "setting": cfg["EFFORT"],
-        "listInput": float(cfg["LIST_INPUT"]),
-        "listOutput": float(cfg["LIST_OUTPUT"]),
+        "modelName": sku,
+        "modelSlug": _slug(sku),
+        "lab": "",
+        "harnessId": spec["id"],
+        "harnessSlug": spec["slug"],
+        "provider": "",
+        "sku": sku,
+        "setting": str(cfg["EFFORT"]),
+        "listInput": 0,
+        "listOutput": 0,
     }
-    if stack["harnessId"] == "hrs_api":
-        stack["harnessId"] = "hrs_api"
     pkg = seal_package(
         suite_version=SUITE_VERSION,
         suite_hash=lock["suiteHash"],

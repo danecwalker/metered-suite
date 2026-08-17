@@ -11,9 +11,11 @@ cd metered-suite
 
 Edit **only** `main.py`:
 
-- `HARNESS` — `claude`, `chatgpt`, `api`, `opencode`, …
-- `COMMAND` — the CLI you already have (`claude -p`, `codex exec`, …)
-- `EFFORT`, model name, list `$/M`
+- `HARNESS` — `claude`, `chatgpt`, `grok`, `qwen`, `pi`, `opencode`
+- `MODEL` — the SKU (must fit that harness; Claude SKUs cannot be filed as ChatGPT)
+- `EFFORT` and `FLAGS` (extra CLI flags only — not a different binary)
+
+Display names, lab, and list prices come from Metered’s catalog when you upload. High-reputation accounts can file a run for a SKU that is not on the catalog yet. An admin still screens every run.
 
 Then:
 
