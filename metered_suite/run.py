@@ -8,11 +8,13 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .adapters import adapter_for
 from .hash import SUITE_VERSION
 from .identity import build_command, resolve_harness, sku_fits
 from .score import score_json
 from .seal import seal_package
 from .tasks import load_tasks, suite_lock
+from .usage import Usage, read_sidecar, write_usage
 
 
 def _slug(name: str) -> str:
@@ -35,33 +37,17 @@ def _load_user_config(root: Path) -> dict:
     return namespace
 
 
-def _render_command(command: list[str] | str, prompt: str, prompt_file: Path, cfg: dict) -> list[str]:
-    mapping = {
-        "{prompt}": prompt,
-        "{prompt_file}": str(prompt_file),
-        "{model}": str(cfg.get("MODEL", "")),
-        "{effort}": str(cfg.get("EFFORT", "")),
-        "{task_id}": prompt_file.parent.name,
-    }
-    if isinstance(command, str):
-        rendered = command
-        for key, value in mapping.items():
-            rendered = rendered.replace(key, value)
-        return ["bash", "-lc", rendered]
-    return [mapping.get(part, part) for part in command]
-
-
-def _read_usage(workspace: Path) -> dict:
-    path = workspace / "usage.json"
-    if not path.exists():
-        return {"input": 0, "output": 0, "reasoning": 0, "cacheHit": 0}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return {
-        "input": int(data.get("input") or 0),
-        "output": int(data.get("output") or 0),
-        "reasoning": int(data.get("reasoning") or data.get("thinking") or 0),
-        "cacheHit": int(data.get("cacheHit") or data.get("cache_hit") or 0),
-    }
+def _init_workspace(workspace: Path) -> None:
+    git = shutil.which("git")
+    if not git:
+        return
+    subprocess.run(
+        [git, "init"],
+        cwd=workspace,
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
 
 
 def _read_output(workspace: Path) -> str:
@@ -72,6 +58,18 @@ def _read_output(workspace: Path) -> str:
     return ""
 
 
+def _collect_usage(slug: str, stdout: str, stderr: str, workspace: Path) -> Usage:
+    parsed = adapter_for(slug).parse(stdout, stderr, workspace)
+    if parsed.counted():
+        write_usage(workspace, parsed)
+        return parsed
+    sidecar = read_sidecar(workspace)
+    if sidecar.counted():
+        return sidecar
+    write_usage(workspace, Usage())
+    return Usage()
+
+
 def run_suite(root: Path | None = None) -> Path:
     root = root or Path(__file__).resolve().parent.parent
     cfg = _load_user_config(root)
@@ -80,9 +78,15 @@ def run_suite(root: Path | None = None) -> Path:
     started = datetime.now(timezone.utc).isoformat()
     raw_tasks: list[dict] = []
     max_attempts = int(cfg.get("MAX_ATTEMPTS") or 3)
+    spec = resolve_harness(str(cfg["HARNESS"]))
+    sku = str(cfg["MODEL"]).strip()
+    if not sku_fits(spec, sku):
+        raise SystemExit(
+            f"MODEL {sku} cannot be filed under the {spec['slug']} harness."
+        )
 
     for task in tasks:
-        usage = {"input": 0, "output": 0, "reasoning": 0, "cacheHit": 0}
+        usage = Usage()
         output = ""
         attempts = 0
         passed = False
@@ -99,37 +103,44 @@ def run_suite(root: Path | None = None) -> Path:
                         f"Previous answer:\n{output}\n"
                     )
                 prompt_file.write_text(prompt, encoding="utf-8")
-                spec = resolve_harness(str(cfg["HARNESS"]))
+                _init_workspace(workspace)
                 flags = list(cfg.get("FLAGS") or [])
-                command = _render_command(
-                    build_command(spec, str(cfg["MODEL"]), flags),
+                command = build_command(
+                    spec,
+                    sku,
+                    flags,
                     prompt,
                     prompt_file,
-                    cfg,
+                    str(cfg.get("EFFORT") or "default"),
                 )
                 env = os.environ.copy()
                 env["METERED_TASK"] = task.id
                 env["METERED_WORKSPACE"] = str(workspace)
+                stdout = ""
+                stderr = ""
                 try:
-                    subprocess.run(
+                    proc = subprocess.run(
                         command,
                         cwd=workspace,
                         env=env,
                         check=False,
                         timeout=60 * 20,
+                        capture_output=True,
+                        text=True,
                     )
+                    stdout = proc.stdout or ""
+                    stderr = proc.stderr or ""
                 except FileNotFoundError as error:
                     raise SystemExit(
                         f"harness command not found: {command[0]}\n"
                         "Install that CLI, or change HARNESS in main.py."
                     ) from error
-                except subprocess.TimeoutExpired:
-                    pass
+                except subprocess.TimeoutExpired as error:
+                    stdout = (error.stdout or "") if isinstance(error.stdout, str) else ""
+                    stderr = (error.stderr or "") if isinstance(error.stderr, str) else ""
+                turn_usage = _collect_usage(spec["slug"], stdout, stderr, workspace)
+                usage = usage.add(turn_usage)
                 output = _read_output(workspace)
-                turn_usage = _read_usage(workspace)
-                usage = {
-                    key: usage[key] + turn_usage[key] for key in usage
-                }
                 passed = score_json(output, task.expected)
                 if passed:
                     break
@@ -139,20 +150,17 @@ def run_suite(root: Path | None = None) -> Path:
             {
                 "id": task.id,
                 "output": output,
-                "usage": usage,
+                "usage": usage.as_dict(),
                 "attempts": attempts,
-                "providerUsage": None,
+                "providerUsage": {"source": usage.source} if usage.counted() else None,
             }
         )
-        print(f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s)")
+        note = ""
+        if not usage.counted():
+            note = " — no token usage from the CLI; this task cannot define $ / M ET"
+        print(f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s){note}")
 
     finished = datetime.now(timezone.utc).isoformat()
-    spec = resolve_harness(str(cfg["HARNESS"]))
-    sku = str(cfg["MODEL"]).strip()
-    if not sku_fits(spec, sku):
-        raise SystemExit(
-            f"MODEL {sku} cannot be filed under the {spec['slug']} harness."
-        )
     stack = {
         "modelName": sku,
         "modelSlug": _slug(sku),
@@ -181,4 +189,14 @@ def run_suite(root: Path | None = None) -> Path:
     path.write_text(json.dumps(pkg, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {path}")
     print(f"passed {pkg['totals']['passed']}/{pkg['totals']['tasks']}")
+    billed = (
+        int(pkg["totals"]["input"])
+        + int(pkg["totals"]["output"])
+        + int(pkg["totals"]["reasoning"])
+    )
+    if billed <= 0:
+        print(
+            "warning: package has no token counts. "
+            "Metered will not rank it as $ / M ET."
+        )
     return path
