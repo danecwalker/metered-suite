@@ -1,0 +1,3 @@
+from .hash import EVALUATOR_VERSION, SUITE_VERSION
+
+__all__ = ["EVALUATOR_VERSION", "SUITE_VERSION"]
