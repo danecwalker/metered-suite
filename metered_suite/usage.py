@@ -1,106 +1,41 @@
-"""Normalized token usage. Adapters write this as usage.json."""
+"""Normalized token usage. Keys are classified by meaning, not a vendor list."""
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-INPUT_KEYS = (
-    "input",
-    "input_tokens",
-    "inputTokens",
-    "prompt_tokens",
-    "promptTokens",
-    "prompt",
-    "promptTokenCount",
-    "input_other",
-    "inputOther",
-)
+_CAMEL = re.compile(r"([a-z0-9])([A-Z])")
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
-OUTPUT_KEYS = (
-    "output",
-    "output_tokens",
-    "outputTokens",
-    "completion_tokens",
-    "completionTokens",
-    "candidates",
-    "candidatesTokenCount",
-    "completion",
-)
+_WRAPPER = {
+    "usage",
+    "tokens",
+    "tokenusage",
+    "usagemetadata",
+    "tokencounts",
+    "tokencount",
+    "tokenstats",
+}
 
-REASONING_KEYS = (
-    "reasoning",
-    "reasoning_tokens",
-    "reasoningTokens",
-    "reasoning_output_tokens",
-    "reasoningOutputTokens",
-    "thinking",
-    "thinking_tokens",
-    "thinkingTokens",
-    "thoughts",
-    "thoughts_tokens",
-    "thoughtsTokenCount",
-)
-
-CACHE_KEYS = (
-    "cacheHit",
-    "cache_hit",
-    "cached_input_tokens",
-    "cachedInputTokens",
-    "cache_read_input_tokens",
-    "cacheReadInputTokens",
-    "cache_read_tokens",
-    "cacheReadTokens",
-    "cachedReadTokens",
-    "cached_read_tokens",
-    "cached_tokens",
-    "cachedTokens",
-    "cachedContentTokenCount",
-    "input_cache_read",
-    "inputCacheRead",
-    "cached",
-    "cache_read",
-    "cacheRead",
-)
-
-CACHE_WRITE_KEYS = (
-    "cacheWrite",
-    "cache_write",
-    "cache_creation_input_tokens",
-    "cacheCreationInputTokens",
-    "cache_creation_tokens",
-    "cacheCreationTokens",
-    "cache_write_input_tokens",
-    "cacheWriteInputTokens",
-    "cache_write_tokens",
-    "cacheWriteTokens",
-    "input_cache_write",
-    "inputCacheWrite",
-    "input_cache_creation",
-    "inputCacheCreation",
-)
-
-NESTED_USAGE_KEYS = (
-    "prompt_tokens_details",
-    "promptTokensDetails",
-    "input_tokens_details",
-    "inputTokensDetails",
-    "completion_tokens_details",
-    "completionTokensDetails",
-    "output_tokens_details",
-    "outputTokensDetails",
-    "cache_creation",
-    "cacheCreation",
-)
-
-EPHEMERAL_WRITE_KEYS = (
-    "ephemeral_5m_input_tokens",
-    "ephemeral_1h_input_tokens",
-    "ephemeral5mInputTokens",
-    "ephemeral1hInputTokens",
-)
+_SKIP_EXACT = {
+    "ok",
+    "failed",
+    "reward",
+    "status",
+    "type",
+    "id",
+    "name",
+    "event",
+    "kind",
+    "scope",
+    "level",
+    "model",
+    "error",
+}
 
 
 @dataclass(frozen=True)
@@ -157,29 +92,74 @@ def as_int(value: Any) -> int:
     return 0
 
 
-def first_int(obj: dict[str, Any], keys: tuple[str, ...]) -> int:
-    for key in keys:
-        if key in obj:
-            number = as_int(obj[key])
-            if number:
-                return number
-    return 0
+def fold_key(name: Any) -> str:
+    text = _CAMEL.sub(r"\1_\2", str(name or ""))
+    return _NON_ALNUM.sub("", text.lower())
 
 
-def _flatten_usage(obj: dict[str, Any]) -> dict[str, Any]:
-    flat = dict(obj)
-    cache_obj = obj.get("cache") if isinstance(obj.get("cache"), dict) else {}
-    for key, value in cache_obj.items():
-        if key not in flat:
-            flat[key] = value
-    for key in NESTED_USAGE_KEYS:
-        inner = obj.get(key)
-        if not isinstance(inner, dict):
-            continue
-        for nested_key, value in inner.items():
-            if nested_key not in flat:
-                flat[nested_key] = value
-    return flat
+def classify_key(name: Any, parent: Any = "") -> str | None:
+    """Map a field name to input / output / reasoning / cache_hit / cache_write."""
+    folded = fold_key(name)
+    parent_fold = fold_key(parent)
+    if not folded or folded in _SKIP_EXACT:
+        return None
+    if folded.endswith("id") or folded.endswith("ms"):
+        return None
+    if "total" in folded and "input" not in folded and "output" not in folded and "prompt" not in folded:
+        return None
+
+    cache_parent = parent_fold == "cache" or parent_fold.startswith("cache")
+    if "ephemeral" in folded:
+        return "cache_write"
+    if cache_parent or "cache" in folded or folded == "cached" or folded.startswith("cached"):
+        if any(word in folded for word in ("write", "creation", "create", "store")):
+            return "cache_write"
+        if cache_parent and any(word in folded for word in ("write", "creation", "create", "store")):
+            return "cache_write"
+        if cache_parent and folded in {"write", "creation", "create", "store"}:
+            return "cache_write"
+        if cache_parent and folded in {"read", "hit", "cached"}:
+            return "cache_hit"
+        return "cache_hit"
+
+    if any(word in folded for word in ("reason", "think", "thought")):
+        return "reasoning"
+
+    if (
+        folded in {"input", "prompt", "promptevalcount"}
+        or folded.startswith("input")
+        or (
+            ("input" in folded or "prompt" in folded)
+            and ("token" in folded or "count" in folded)
+        )
+    ):
+        return "input"
+
+    if (
+        folded in {"output", "completion", "candidates", "evalcount"}
+        or folded.startswith("output")
+        or (
+            any(word in folded for word in ("output", "completion", "candidate", "generated"))
+            and ("token" in folded or "count" in folded)
+        )
+    ):
+        return "output"
+    return None
+
+
+def _should_lift(name: Any) -> bool:
+    folded = fold_key(name)
+    return any(word in folded for word in ("cache", "detail", "token", "usage", "ephemeral"))
+
+
+def _flatten_usage(obj: dict[str, Any], parent: str = "") -> list[tuple[str, str, Any]]:
+    """Yield (parent, key, value) including one-level nested usage-shaped dicts."""
+    rows: list[tuple[str, str, Any]] = []
+    for key, value in obj.items():
+        rows.append((parent, str(key), value))
+        if isinstance(value, dict) and _should_lift(key):
+            rows.extend(_flatten_usage(value, str(key)))
+    return rows
 
 
 def pick_richer(left: Usage, right: Usage) -> Usage:
@@ -197,25 +177,51 @@ def pick_richer(left: Usage, right: Usage) -> Usage:
     return left
 
 
+def _numeric(value: Any) -> int:
+    """Int, {tokens|count|total|value: N}, or a list of token ids."""
+    number = as_int(value)
+    if number:
+        return number
+    if isinstance(value, dict):
+        for key in ("tokens", "token", "count", "total", "value", "amount", "n"):
+            number = as_int(value.get(key))
+            if number:
+                return number
+        return 0
+    if isinstance(value, list) and value and all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+        return len(value)
+    return 0
+
+
 def usage_from_fields(obj: dict[str, Any], *, source: str = "cli") -> Usage:
-    flat = _flatten_usage(obj)
-    cache_obj = obj.get("cache") if isinstance(obj.get("cache"), dict) else {}
-    cache_hit = first_int(flat, CACHE_KEYS) or first_int(
-        cache_obj, ("read", "hit", "cached", "cache_read")
-    )
-    cache_write = first_int(flat, CACHE_WRITE_KEYS) or first_int(
-        cache_obj, ("write", "creation", "create", "cache_write")
-    )
-    if not cache_write:
-        creation = obj.get("cache_creation") or obj.get("cacheCreation")
-        if isinstance(creation, dict):
-            cache_write = sum(as_int(creation.get(key)) for key in EPHEMERAL_WRITE_KEYS)
+    buckets = {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_hit": 0,
+        "cache_write": 0,
+    }
+    for parent, key, value in _flatten_usage(obj):
+        field = classify_key(key, parent)
+        if field is None:
+            continue
+        number = _numeric(value)
+        if number > buckets[field]:
+            buckets[field] = number
+    # Ephemeral cache writes are additive slices of one write, not alternatives.
+    writes = [
+        as_int(value)
+        for parent, key, value in _flatten_usage(obj)
+        if not isinstance(value, dict) and "ephemeral" in fold_key(key)
+    ]
+    if len(writes) > 1:
+        buckets["cache_write"] = max(buckets["cache_write"], sum(writes))
     usage = Usage(
-        input=first_int(flat, INPUT_KEYS),
-        output=first_int(flat, OUTPUT_KEYS),
-        reasoning=first_int(flat, REASONING_KEYS),
-        cache_hit=cache_hit,
-        cache_write=cache_write,
+        input=buckets["input"],
+        output=buckets["output"],
+        reasoning=buckets["reasoning"],
+        cache_hit=buckets["cache_hit"],
+        cache_write=buckets["cache_write"],
         source=source,
     )
     if not usage.counted():
@@ -226,16 +232,8 @@ def usage_from_fields(obj: dict[str, Any], *, source: str = "cli") -> Usage:
 def usage_from_mapping(obj: Any, *, source: str = "cli") -> Usage:
     if not isinstance(obj, dict):
         return Usage()
-    for key in (
-        "usage",
-        "tokens",
-        "token_usage",
-        "tokenUsage",
-        "usageMetadata",
-        "usage_metadata",
-    ):
-        inner = obj.get(key)
-        if isinstance(inner, dict):
+    for key, inner in obj.items():
+        if isinstance(inner, dict) and fold_key(key) in _WRAPPER:
             parsed = usage_from_fields(inner, source=source)
             if parsed.counted():
                 return parsed

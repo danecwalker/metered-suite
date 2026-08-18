@@ -6,108 +6,7 @@ import unittest
 from pathlib import Path
 
 from metered_suite.adapters import parse_usage
-from metered_suite.identity import build_command, resolve_harness, sku_fits
 from metered_suite.usage import Usage, read_sidecar, write_usage
-
-
-class CommandTests(unittest.TestCase):
-    def test_claude_injects_json_output_and_effort(self) -> None:
-        spec = resolve_harness("claude")
-        cmd = build_command(
-            spec,
-            "claude-opus-4-6",
-            ["--dangerously-skip-permissions"],
-            "Write answer.json",
-            Path("instruction.md"),
-            "high",
-        )
-        self.assertEqual(cmd[0], "claude")
-        self.assertIn("--output-format", cmd)
-        self.assertIn("json", cmd)
-        self.assertIn("--effort", cmd)
-        self.assertIn("high", cmd)
-        self.assertIn("--dangerously-skip-permissions", cmd)
-        self.assertIn("Write answer.json", cmd)
-
-    def test_chatgpt_is_codex_exec_json(self) -> None:
-        cmd = build_command(
-            resolve_harness("chatgpt"),
-            "gpt-5.4",
-            [],
-            "prompt",
-            Path("instruction.md"),
-            "medium",
-        )
-        self.assertEqual(cmd[:4], ["codex", "exec", "--json", "--skip-git-repo-check"])
-        self.assertIn("model_reasoning_effort=medium", cmd)
-
-    def test_qwen_uses_stream_json_and_yolo(self) -> None:
-        cmd = build_command(
-            resolve_harness("qwen"),
-            "qwen3.8-max-preview",
-            ["--yolo"],
-            "prompt",
-            Path("instruction.md"),
-            "max",
-        )
-        self.assertEqual(cmd[0], "qwen")
-        self.assertIn("stream-json", cmd)
-        self.assertIn("--yolo", cmd)
-        self.assertIn("qwen3.8-max-preview", cmd)
-
-    def test_kimi_uses_stream_json(self) -> None:
-        cmd = build_command(
-            resolve_harness("kimi"),
-            "kimi-k2.5",
-            ["--yolo"],
-            "prompt",
-            Path("instruction.md"),
-            "default",
-        )
-        self.assertEqual(cmd[0], "kimi")
-        self.assertIn("stream-json", cmd)
-        self.assertIn("--yolo", cmd)
-
-    def test_blocked_output_format_flag(self) -> None:
-        with self.assertRaises(SystemExit):
-            build_command(
-                resolve_harness("claude"),
-                "claude-opus-4-6",
-                ["--output-format", "text"],
-                "p",
-                Path("instruction.md"),
-                "default",
-            )
-
-
-class IdentityTests(unittest.TestCase):
-    def test_sku_lock(self) -> None:
-        self.assertTrue(sku_fits(resolve_harness("claude"), "claude-opus-4-6"))
-        self.assertFalse(sku_fits(resolve_harness("chatgpt"), "claude-opus-4-6"))
-        self.assertTrue(sku_fits(resolve_harness("chatgpt"), "gpt-5.4"))
-        self.assertTrue(sku_fits(resolve_harness("gemini"), "gemini-2.5-pro"))
-        self.assertFalse(sku_fits(resolve_harness("gemini"), "claude-opus-4-6"))
-        self.assertTrue(sku_fits(resolve_harness("kimi"), "kimi-k2.5"))
-        self.assertTrue(sku_fits(resolve_harness("kimi"), "moonshot-v1"))
-        self.assertTrue(sku_fits(resolve_harness("deepseek"), "deepseek-v4-pro"))
-        self.assertFalse(sku_fits(resolve_harness("deepseek"), "gpt-5.4"))
-        self.assertTrue(sku_fits(resolve_harness("opencode"), "gpt-5.4"))
-
-    def test_unknown_harness(self) -> None:
-        with self.assertRaises(SystemExit):
-            resolve_harness("windsurf")
-
-    def test_api_cannot_invent_a_binary(self) -> None:
-        with self.assertRaises(SystemExit) as err:
-            build_command(
-                resolve_harness("api"),
-                "gpt-5.4",
-                [],
-                "p",
-                Path("instruction.md"),
-                "default",
-            )
-        self.assertIn("cannot invent a binary", str(err.exception))
 
 
 class ParseTests(unittest.TestCase):
@@ -223,6 +122,27 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(usage.reasoning, 9)
         self.assertEqual(usage.cache_hit, 24448)
         self.assertEqual(usage.cache_write, 0)
+
+    def test_chatgpt_sums_incremental_turns(self) -> None:
+        lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 100, "output_tokens": 10},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 40, "output_tokens": 8},
+                    }
+                ),
+            ]
+        )
+        usage = parse_usage("chatgpt", lines)
+        self.assertEqual(usage.input, 140)
+        self.assertEqual(usage.output, 18)
 
     def test_chatgpt_nested_details_cache_and_thinking(self) -> None:
         raw = json.dumps(

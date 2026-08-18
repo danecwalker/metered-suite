@@ -9,9 +9,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .adapters import adapter_for
 from .hash import SUITE_VERSION
-from .identity import build_command, resolve_harness, sku_fits
+from .identity import sku_fits
+from .recipe import RECIPE_NAME, build_command, get_recipe
 from .sandbox import (
     SandboxError,
     collect_patch,
@@ -24,7 +24,7 @@ from .score import score_json
 from .seal import seal_package
 from .tasks import OfficialTask, load_tasks, suite_lock
 from .term import bold, cyan, dim, format_elapsed, green, log as _log, red, spin, yellow
-from .usage import Usage, read_sidecar, write_usage
+from .usage import Usage
 
 
 def _slug(name: str) -> str:
@@ -121,14 +121,21 @@ def _cli_error_brief(stdout: str, stderr: str) -> str:
     return ""
 
 
-def _load_user_config(root: Path) -> dict:
-    namespace: dict = {}
-    exec((root / "main.py").read_text(encoding="utf-8"), namespace)
-    required = ["HARNESS", "MODEL", "EFFORT"]
-    missing = [key for key in required if key not in namespace]
-    if missing:
-        raise SystemExit(f"main.py is missing: {', '.join(missing)}")
-    return namespace
+def normalize_config(config: dict) -> dict:
+    harness = str(config.get("HARNESS") or "").strip()
+    model = str(config.get("MODEL") or "").strip()
+    if not harness or not model:
+        raise SystemExit(
+            "Need a harness and --model.\n"
+            "Example: python3 -m metered_suite qwen --model qwen3.8-max --effort max"
+        )
+    return {
+        "HARNESS": harness,
+        "MODEL": model,
+        "EFFORT": str(config.get("EFFORT") or "default"),
+        "MAX_ATTEMPTS": int(config["MAX_ATTEMPTS"]) if config.get("MAX_ATTEMPTS") is not None else 0,
+        "TIMEOUT_SEC": int(config.get("TIMEOUT_SEC") or 45 * 60),
+    }
 
 
 def _init_workspace(workspace: Path) -> None:
@@ -240,6 +247,42 @@ _FAIL_HINTS = {
     "test_persist_leased_message": (
         "Disk state must include the active lease, not only the body list."
     ),
+    "test_window_edge_is_exclusive": (
+        "A hit that is exactly window_ms old is outside the sliding window."
+    ),
+    "test_remaining_does_not_record": (
+        "remaining must not add a hit. It only reports how many allows are left."
+    ),
+    "test_token_bucket_cost_and_cap": (
+        "token_bucket spends cost tokens, refills at rate_per_sec, and caps at burst."
+    ),
+    "test_window_and_bucket_do_not_share_state": (
+        "Sliding-window hits and token-bucket tokens for the same key are independent."
+    ),
+    "test_reset_clears_bucket_only_for_that_key": (
+        "reset(key) clears window and bucket state for that key only."
+    ),
+    "test_persist_bucket_across_processes": (
+        "A new Limiter(path=...) must reload token-bucket tokens and last refill time."
+    ),
+    "test_pointer_escapes": (
+        "JSON Pointer ~1 is / and ~0 is ~. Decode ~1 first."
+    ),
+    "test_array_insert_shifts": (
+        "add on an array index inserts and shifts later items right."
+    ),
+    "test_remove_array_index": (
+        "remove on an array index deletes that item."
+    ),
+    "test_empty_path_replaces_document": (
+        "path \"\" is the whole document."
+    ),
+    "test_add_missing_parent_raises": (
+        "add must not create missing parents. Raise PatchError."
+    ),
+    "test_unsupported_op_raises": (
+        "Only add, remove, replace, and test are required. Other ops raise PatchError."
+    ),
 }
 
 
@@ -315,21 +358,33 @@ def _keep_attempt(out_dir: Path, task_id: str, attempt: int, workspace: Path, ou
         shutil.copy2(log, dest / "unittest.log")
 
 
-def _collect_usage(slug: str, stdout: str, stderr: str, workspace: Path) -> Usage:
-    parsed = adapter_for(slug).parse(stdout, stderr, workspace)
-    if parsed.counted():
-        write_usage(workspace, parsed)
-        return parsed
-    sidecar = read_sidecar(workspace)
-    if sidecar.counted():
-        return sidecar
-    write_usage(workspace, Usage())
-    return Usage()
+def _collect_usage(
+    slug: str,
+    stdout: str,
+    stderr: str,
+    workspace: Path,
+    *,
+    since: float | None = None,
+) -> Usage:
+    from .harvest import harvest
+
+    del slug
+    return harvest(stdout, stderr, workspace, persist=True, since=since)
 
 
-def run_suite(root: Path | None = None) -> Path:
+def run_suite(root: Path | None = None, config: dict | None = None) -> Path:
     root = root or Path(__file__).resolve().parent.parent
-    cfg = _load_user_config(root)
+    if config is None:
+        raise SystemExit(
+            "Need a harness and --model.\n"
+            "Example: python3 -m metered_suite qwen --model qwen3.8-max --effort max"
+        )
+    cfg = normalize_config(config)
+    spec = get_recipe(root, str(cfg["HARNESS"]))
+    sku = str(cfg["MODEL"]).strip()
+    if not sku_fits(sku):
+        raise SystemExit("MODEL is empty.")
+    effort = str(cfg.get("EFFORT") or "default")
     tasks = load_tasks()
     lock = suite_lock(tasks)
     started = datetime.now(timezone.utc).isoformat()
@@ -337,13 +392,6 @@ def run_suite(root: Path | None = None) -> Path:
     raw_tasks: list[dict] = []
     max_attempts = int(cfg["MAX_ATTEMPTS"]) if cfg.get("MAX_ATTEMPTS") is not None else 0
     timeout_sec = int(cfg.get("TIMEOUT_SEC") or 45 * 60)
-    spec = resolve_harness(str(cfg["HARNESS"]))
-    sku = str(cfg["MODEL"]).strip()
-    if not sku_fits(spec, sku):
-        raise SystemExit(
-            f"MODEL {sku} cannot be filed under the {spec['slug']} harness."
-        )
-    effort = str(cfg.get("EFFORT") or "default")
     _log(
         bold(
             f"{spec['slug']}  {sku}  {effort}  {len(tasks)} tasks  "
@@ -397,11 +445,10 @@ def run_suite(root: Path | None = None) -> Path:
                 reset_next = False
                 prompt_file = workspace / "instruction.md"
                 prompt_file.write_text(prompt, encoding="utf-8")
-                flags = list(cfg.get("FLAGS") or [])
                 command = build_command(
-                    spec,
+                    root,
+                    spec["name"],
                     sku,
-                    flags,
                     prompt,
                     prompt_file,
                     effort,
@@ -417,6 +464,7 @@ def run_suite(root: Path | None = None) -> Path:
                 stderr = ""
                 timed_out = False
                 exit_code: int | None = None
+                attempt_started = time.time()
                 try:
                     if task.task_dir is not None:
                         with spin("harness"):
@@ -443,13 +491,19 @@ def run_suite(root: Path | None = None) -> Path:
                 except FileNotFoundError as error:
                     raise SystemExit(
                         f"harness command not found: {command[0]}\n"
-                        "Install that CLI, or change HARNESS in main.py."
+                        f"Install that CLI, or edit {RECIPE_NAME}."
                     ) from error
                 except subprocess.TimeoutExpired as error:
                     timed_out = True
                     stdout = (error.stdout or "") if isinstance(error.stdout, str) else ""
                     stderr = (error.stderr or "") if isinstance(error.stderr, str) else ""
-                turn_usage = _collect_usage(spec["slug"], stdout, stderr, workspace)
+                turn_usage = _collect_usage(
+                    spec["slug"],
+                    stdout,
+                    stderr,
+                    workspace,
+                    since=attempt_started,
+                )
                 usage = usage.add(turn_usage)
                 if timed_out:
                     status = yellow("  timeout")

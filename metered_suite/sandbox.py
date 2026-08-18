@@ -33,10 +33,27 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .hash import SUITE_VERSION
 from .live import run_command
 
-AGENT_IMAGE = "metered-suite-agent:py3.1"
-VERIFY_IMAGE = "metered-suite-verify:py3.1"
+
+def _image_series() -> str:
+    return SUITE_VERSION.rsplit("-", 1)[-1]
+
+
+def task_tag(task_dir: Path) -> str:
+    ident = task_dir / "id.txt"
+    if ident.exists():
+        return ident.read_text(encoding="utf-8").strip() or task_dir.name
+    return task_dir.name.split("-", 1)[-1]
+
+
+def agent_image(task_dir: Path) -> str:
+    return f"metered-suite-agent:{_image_series()}.{task_tag(task_dir)}"
+
+
+def verify_image(task_dir: Path) -> str:
+    return f"metered-suite-verify:{_image_series()}.{task_tag(task_dir)}"
 
 _API_ENV_PREFIXES = (
     "ANTHROPIC",
@@ -106,20 +123,24 @@ def ensure_images(task_dir: Path, force: bool | None = None) -> None:
     if force is None:
         force = os.environ.get("METERED_REBUILD") == "1"
     env = task_dir / "environment"
-    if force or not _image_exists(AGENT_IMAGE):
+    agent = agent_image(task_dir)
+    verify = verify_image(task_dir)
+    if force or not _image_exists(agent):
         _docker(
             "build",
             "-t",
-            AGENT_IMAGE,
+            agent,
             "-f",
             str(env / "Dockerfile"),
             str(env),
         )
-    if force or not _image_exists(VERIFY_IMAGE):
+    if force or not _image_exists(verify):
         _docker(
             "build",
             "-t",
-            VERIFY_IMAGE,
+            verify,
+            "--build-arg",
+            f"AGENT_IMAGE={agent}",
             "-f",
             str(env / "Dockerfile.verify"),
             str(task_dir),
@@ -130,7 +151,7 @@ def seed_workspace(task_dir: Path, dest: Path) -> None:
     """Copy /workspace out of the agent image. Hidden tests stay out."""
     ensure_images(task_dir)
     dest.mkdir(parents=True, exist_ok=True)
-    created = _docker("create", AGENT_IMAGE, capture_output=True, text=True)
+    created = _docker("create", agent_image(task_dir), capture_output=True, text=True)
     cid = (created.stdout or "").strip()
     if not cid:
         raise SandboxError("docker create produced no container id")
@@ -252,7 +273,7 @@ def grade_patch(task_dir: Path, patch: str, work: Path) -> dict:
                 f"{incoming}:/in:ro",
                 "-v",
                 f"{outgoing}:/out",
-                VERIFY_IMAGE,
+                verify_image(task_dir),
             ],
             cwd=None,
             env=os.environ.copy(),
@@ -307,6 +328,7 @@ def _run_in_agent_container(
     workspace: Path,
     env: dict,
     timeout: int,
+    task_dir: Path,
 ) -> subprocess.CompletedProcess:
     binary = Path(command[0]).resolve()
     inner = [f"/opt/metered-cli/{binary.name}", *command[1:]]
@@ -340,7 +362,7 @@ def _run_in_agent_container(
         host = home / rel
         if host.exists():
             args.extend(["-v", f"{host}:/root/{rel}"])
-    args.append(AGENT_IMAGE)
+    args.append(agent_image(task_dir))
     args.extend(inner)
     return run_command(
         ["docker", *args],
@@ -465,7 +487,7 @@ def run_agent(
     if task_dir is not None and (force_docker or (linux and not force_host)):
         ensure_images(task_dir)
         try:
-            return _run_in_agent_container(command, workspace, env, timeout)
+            return _run_in_agent_container(command, workspace, env, timeout, task_dir)
         except subprocess.TimeoutExpired:
             raise
         except SandboxError:

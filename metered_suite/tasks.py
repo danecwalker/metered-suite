@@ -49,9 +49,15 @@ def load_tasks() -> list[OfficialTask]:
             + character_count(expected_text)
             + character_count(_walk_text(repo))
         )
+        ident = folder / "id.txt"
+        task_id = (
+            ident.read_text(encoding="utf-8").strip()
+            if ident.exists()
+            else folder.name.split("-", 1)[-1]
+        )
         tasks.append(
             OfficialTask(
-                id=folder.name.split("-", 1)[-1],
+                id=task_id,
                 label=(folder / "label.txt").read_text(encoding="utf-8").strip()
                 if (folder / "label.txt").exists()
                 else folder.name,

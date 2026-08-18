@@ -7,8 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from metered_suite.sandbox import (
-    AGENT_IMAGE,
-    VERIFY_IMAGE,
+    agent_image,
     _seatbelt_profile,
     describe_sandbox,
     ensure_images,
@@ -16,6 +15,7 @@ from metered_suite.sandbox import (
     is_linux_binary,
     parse_unittest_log,
     seed_workspace,
+    verify_image,
 )
 
 
@@ -91,8 +91,8 @@ class EnsureImagesTests(unittest.TestCase):
             docker.return_value = subprocess.CompletedProcess(["docker"], 0)
             ensure_images(TASK, force=True)
             tags = [call.args[2] for call in docker.call_args_list]
-            self.assertIn(AGENT_IMAGE, tags)
-            self.assertIn(VERIFY_IMAGE, tags)
+            self.assertIn(agent_image(TASK), tags)
+            self.assertIn(verify_image(TASK), tags)
 
 
 class SeedWorkspaceTests(unittest.TestCase):

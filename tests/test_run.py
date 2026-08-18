@@ -9,7 +9,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from metered_suite.identity import build_command, resolve_harness
+from metered_suite.recipe import RECIPE_NAME, build_command, dump_recipes
 from metered_suite.run import (
     _command_preview,
     _follow_up_prompt,
@@ -18,6 +18,59 @@ from metered_suite.run import (
     run_suite,
 )
 from metered_suite.tasks import OfficialTask
+
+GROK_RECIPE = {
+    "grok": {
+        "slug": "grok",
+        "bin": "grok",
+        "argv": [
+            "grok",
+            "--single",
+            "{prompt}",
+            "--model",
+            "{model}",
+            "--output-format",
+            "json",
+            "--reasoning-effort",
+            "{effort}",
+            "--always-approve",
+        ],
+    }
+}
+
+CLAUDE_RECIPE = {
+    "claude": {
+        "slug": "claude",
+        "bin": "claude",
+        "argv": [
+            "claude",
+            "--print",
+            "--model",
+            "{model}",
+            "--output-format",
+            "json",
+            "--effort",
+            "{effort}",
+            "--dangerously-skip-permissions",
+            "{prompt}",
+        ],
+    }
+}
+
+
+def write_recipes(root: Path, recipes: dict) -> None:
+    (root / RECIPE_NAME).write_text(dump_recipes(recipes), encoding="utf-8")
+
+
+class RequiresInitTests(unittest.TestCase):
+    def test_run_suite_requires_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as err:
+                run_suite(
+                    Path(tmp),
+                    {"HARNESS": "grok", "MODEL": "grok-4.6", "MAX_ATTEMPTS": 1},
+                )
+            self.assertIn("init", str(err.exception))
 
 
 class VerifierBriefTests(unittest.TestCase):
@@ -76,30 +129,37 @@ class VerifierBriefTests(unittest.TestCase):
 class CommandPreviewTests(unittest.TestCase):
     def test_skips_grok_prompt_keeps_model(self) -> None:
         prompt = "Write answer.json\nSECRET_PROMPT_BODY"
-        cmd = build_command(
-            resolve_harness("grok"),
-            "grok-4.6",
-            ["--always-approve"],
-            prompt,
-            Path("instruction.md"),
-            "xhigh",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_recipes(root, GROK_RECIPE)
+            cmd = build_command(
+                root,
+                "grok",
+                "grok-4.6",
+                prompt,
+                Path("instruction.md"),
+                "xhigh",
+            )
         preview = _command_preview(cmd, prompt)
         self.assertTrue(preview.startswith("grok "))
         self.assertIn("--model grok-4.6", preview)
+        self.assertIn("--always-approve", preview)
         self.assertNotIn("SECRET_PROMPT_BODY", preview)
         self.assertNotIn("Write answer.json", preview)
 
     def test_skips_short_positional_prompt(self) -> None:
         prompt = "short prompt"
-        cmd = build_command(
-            resolve_harness("claude"),
-            "claude-opus-4-6",
-            ["--dangerously-skip-permissions"],
-            prompt,
-            Path("instruction.md"),
-            "high",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_recipes(root, CLAUDE_RECIPE)
+            cmd = build_command(
+                root,
+                "claude",
+                "claude-opus-4-6",
+                prompt,
+                Path("instruction.md"),
+                "high",
+            )
         preview = _command_preview(cmd, prompt)
         self.assertIn("claude --print --model claude-opus-4-6", preview)
         self.assertNotIn("short prompt", preview)
@@ -142,17 +202,22 @@ class RunProgressTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "main.py").write_text(
-                'HARNESS = "grok"\nMODEL = "grok-4.6"\nEFFORT = "xhigh"\nMAX_ATTEMPTS = 2\n',
-                encoding="utf-8",
-            )
+            write_recipes(root, GROK_RECIPE)
             buf = StringIO()
             with (
                 patch("metered_suite.run.load_tasks", return_value=tasks),
                 patch("metered_suite.run.subprocess.run", side_effect=fake_run),
                 redirect_stdout(buf),
             ):
-                path = run_suite(root)
+                path = run_suite(
+                    root,
+                    {
+                        "HARNESS": "grok",
+                        "MODEL": "grok-4.6",
+                        "EFFORT": "xhigh",
+                        "MAX_ATTEMPTS": 2,
+                    },
+                )
 
             text = buf.getvalue()
             self.assertIn("grok  grok-4.6  xhigh  2 tasks  2", text)
@@ -195,17 +260,22 @@ class RunProgressTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "main.py").write_text(
-                'HARNESS = "grok"\nMODEL = "grok-4.6"\nEFFORT = "xhigh"\nMAX_ATTEMPTS = 1\n',
-                encoding="utf-8",
-            )
+            write_recipes(root, GROK_RECIPE)
             buf = StringIO()
             with (
                 patch("metered_suite.run.load_tasks", return_value=tasks),
                 patch("metered_suite.run.subprocess.run", side_effect=fake_run),
                 redirect_stdout(buf),
             ):
-                run_suite(root)
+                run_suite(
+                    root,
+                    {
+                        "HARNESS": "grok",
+                        "MODEL": "grok-4.6",
+                        "EFFORT": "xhigh",
+                        "MAX_ATTEMPTS": 1,
+                    },
+                )
 
             text = buf.getvalue()
             self.assertIn("  timeout", text)
@@ -252,17 +322,22 @@ class RunProgressTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "main.py").write_text(
-                'HARNESS = "grok"\nMODEL = "grok-4.6"\nEFFORT = "xhigh"\nMAX_ATTEMPTS = 0\n',
-                encoding="utf-8",
-            )
+            write_recipes(root, GROK_RECIPE)
             buf = StringIO()
             with (
                 patch("metered_suite.run.load_tasks", return_value=tasks),
                 patch("metered_suite.run.subprocess.run", side_effect=fake_run),
                 redirect_stdout(buf),
             ):
-                run_suite(root)
+                run_suite(
+                    root,
+                    {
+                        "HARNESS": "grok",
+                        "MODEL": "grok-4.6",
+                        "EFFORT": "xhigh",
+                        "MAX_ATTEMPTS": 0,
+                    },
+                )
 
             text = buf.getvalue()
             self.assertIn("until pass", text)

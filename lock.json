@@ -1,8 +1,8 @@
 {
-  "suiteVersion": "work-2026.08-py3",
-  "suiteHash": "67c88cb48b2b1cb91204be3be24b90ece4d35384add9e611b8f18ff2be31abbe",
-  "workChars": 7696,
-  "workMu": 1924.0,
+  "suiteVersion": "work-2026.08-py4",
+  "suiteHash": "b3737f13ab78d7af5b0525e0b2fbd4cd31ca65f28548c407a5313ada3ad55b0d",
+  "workChars": 17174,
+  "workMu": 4293.5,
   "tasks": [
     {
       "id": "queue",
@@ -22,6 +22,44 @@
       },
       "mustInclude": null,
       "workChars": 7696
+    },
+    {
+      "id": "jsonpatch",
+      "label": "JSON Patch (RFC 6902 subset)",
+      "prompt": "You are in a checkout of `jsonpatch`, a small RFC 6902 subset.\n\nThe public unit tests fail. Fix the library so this exits 0:\n\n```\npython3 -m unittest discover -s tests -v\n```\n\nDo not edit files under `tests/`. After you exit, a hidden verifier runs in a fresh container on a git patch of your work. Hardcoding the public fixtures will fail.\n\nRequired behavior:\n\n- `apply(doc, ops)` applies a list of patch operations and returns the result. It must not mutate `doc`.\n- Supported `op` values are `add`, `remove`, `replace`, and `test`. Other ops raise `PatchError`.\n- `path` is a JSON Pointer. The empty path `\"\"` is the whole document. Escape `~1` as `/` and `~0` as `~`, in that order.\n- `add` inserts. For an object key it sets the value. For an array, `\"-\"` appends. A numeric token inserts at that index (existing items shift right). Parent must already exist.\n- `remove` deletes the pointed value. The target must exist.\n- `replace` overwrites a value that already exists.\n- `test` compares the pointed value to `value` with Python `==`. A mismatch raises `PatchError`. A match leaves the document unchanged.\n- Missing targets, bad pointers, and failed tests raise `PatchError`.\n\nRun `python3 -m unittest discover -s tests -v` until those public tests pass. A hidden verifier then grades a git patch in a fresh container. Hidden cases use different documents and paths. Hardcoding the public fixtures will fail.\n",
+      "promptHash": "9f23157e045b4d0669d81b18b8c776062b254772d1bcd246322237eec4596886",
+      "check": "extract-json",
+      "expectedKeys": [
+        "failed",
+        "ok",
+        "reward"
+      ],
+      "expectedJson": {
+        "failed": 0,
+        "ok": true,
+        "reward": 1
+      },
+      "mustInclude": null,
+      "workChars": 3645
+    },
+    {
+      "id": "ratelimit",
+      "label": "Token bucket and sliding window",
+      "prompt": "You are in a checkout of `ratelimit`, a small in-process rate limiter.\n\nThe public unit tests fail. Fix the library so this exits 0:\n\n```\npython3 -m unittest discover -s tests -v\n```\n\nDo not edit files under `tests/`. After you exit, a hidden verifier runs in a fresh container on a git patch of your work. Hardcoding the public fixtures will fail.\n\nRequired behavior:\n\n- `Limiter(path=None, clock=None)` stores state in memory. If `path` is set, state must survive a new `Limiter(path=...)` process.\n- Time comes from the optional `clock` callable (milliseconds). Tests inject it. Do not call `time.time` if `clock` was provided.\n- `allow(key, limit, window_ms)` is a sliding window. It returns True and records a hit when this key has fewer than `limit` hits with timestamp in `(now - window_ms, now]`. Otherwise it returns False and records nothing.\n- Hits exactly `window_ms` old are outside the window and do not count.\n- `remaining(key, limit, window_ms)` is how many more `allow` calls would succeed now. It does not record a hit.\n- `token_bucket(key, rate_per_sec, burst, cost=1)` is a token bucket. The bucket starts full at `burst`. It refills at `rate_per_sec` tokens per second, capped at `burst`. A call costs `cost` tokens. Return True and spend if the bucket has at least `cost`, else return False and do not spend.\n- Sliding-window state and token-bucket state for the same key are independent.\n- `reset(key)` clears both kinds of state for that key only.\n\nRun `python3 -m unittest discover -s tests -v` until those public tests pass. A hidden verifier then grades a git patch in a fresh container. Hidden cases use different numbers and timings. Hardcoding the public fixtures will fail.\n",
+      "promptHash": "00a537456222ae2a1dd6ff255aa53e37cc294fc1bfeeda0bd736ec25798d49e5",
+      "check": "extract-json",
+      "expectedKeys": [
+        "failed",
+        "ok",
+        "reward"
+      ],
+      "expectedJson": {
+        "failed": 0,
+        "ok": true,
+        "reward": 1
+      },
+      "mustInclude": null,
+      "workChars": 5833
     }
   ]
 }

@@ -1,7 +1,7 @@
 [project]
 name = "metered-suite"
 version = "0.3.0"
-description = "Official Metered jobs. Clone, edit main.py, run your harness."
+description = "Official Metered jobs. Run python3 -m metered_suite init, then python3 -m metered_suite <harness> --model <sku>."
 requires-python = ">=3.10"
 readme = "README.md"
 
