@@ -23,6 +23,17 @@ class SnippetTests(unittest.TestCase):
     def test_result_and_error(self) -> None:
         self.assertEqual(event_snippet({"type": "result", "subtype": "success"}), "cli result success")
         self.assertIn("boom", event_snippet({"type": "error", "message": "boom"}) or "")
+        err = event_snippet(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "result": "auth failed",
+                "usage": {"input_tokens": 0},
+            }
+        )
+        self.assertIn("cli error", err or "")
+        self.assertIn("auth failed", err or "")
 
     def test_json_line(self) -> None:
         self.assertEqual(

@@ -91,12 +91,23 @@ def _cli_error_brief(stdout: str, stderr: str) -> str:
         if not isinstance(blob, dict):
             continue
         kind = str(blob.get("type") or "")
-        if kind in {"error", "turn.failed"}:
-            message = blob.get("message") or blob.get("error") or blob
+        if blob.get("is_error") or blob.get("isError") or kind in {"error", "turn.failed"}:
+            message = (
+                blob.get("result")
+                or blob.get("message")
+                or blob.get("error")
+                or blob.get("errors")
+                or kind
+            )
             if isinstance(message, dict):
                 message = message.get("message") or message.get("error") or message
+            if isinstance(message, list) and message:
+                message = message[0]
             text = _one_line(str(message))
             if text:
+                reason = blob.get("stop_reason") or blob.get("stopReason")
+                if reason:
+                    text = f"{text} ({reason})"
                 return text
         payload = blob.get("payload")
         if isinstance(payload, dict) and payload.get("type") in {"error", "stream_error"}:

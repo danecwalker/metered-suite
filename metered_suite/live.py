@@ -101,6 +101,11 @@ def event_snippet(obj: object) -> str | None:
         return f"model {_one_line(str(obj['text']), 72)}"
 
     if lower == "result":
+        if obj.get("is_error") or obj.get("isError"):
+            err = obj.get("result") or obj.get("errors") or obj.get("error") or "is_error"
+            if isinstance(err, list):
+                err = err[0] if err else "is_error"
+            return f"cli error {_one_line(str(err))}"
         return f"cli result {subtype or 'done'}".strip()
     if lower == "system":
         return f"cli {subtype or 'system'}"

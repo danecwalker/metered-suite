@@ -385,6 +385,27 @@ def _seatbelt_profile(workspace: Path, task_dir: Path | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _cli_looks_blocked(proc: subprocess.CompletedProcess) -> bool:
+    text = (proc.stderr or "") + (proc.stdout or "")
+    if "sandbox-exec:" in text and proc.returncode not in {0, None}:
+        return True
+    try:
+        from .usage import json_blobs
+
+        for blob in json_blobs(text):
+            if not isinstance(blob, dict):
+                continue
+            if not (blob.get("is_error") or blob.get("isError")):
+                continue
+            usage = blob.get("usage") if isinstance(blob.get("usage"), dict) else {}
+            tokens = int(usage.get("input_tokens") or usage.get("inputTokens") or 0)
+            if tokens <= 0 and int(blob.get("duration_api_ms") or blob.get("durationApiMs") or 0) <= 0:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _run_host_jail(
     command: list[str],
     workspace: Path,
@@ -408,8 +429,8 @@ def _run_host_jail(
             timeout=timeout,
             watch=workspace,
         )
-        text = (proc.stderr or "") + (proc.stdout or "")
-        if "sandbox-exec:" in text and proc.returncode != 0:
+        if _cli_looks_blocked(proc):
+            print("  host jail blocked the CLI, retrying without seatbelt", flush=True)
             return run_command(
                 command,
                 cwd=workspace,
