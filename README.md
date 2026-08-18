@@ -42,7 +42,7 @@ Docker is required. The first run builds the two images. Set `METERED_REBUILD=1`
 
 Optional in `main.py`: `TIMEOUT_SEC` (default 45 minutes per attempt) and `MAX_ATTEMPTS`. `MAX_ATTEMPTS = 0` (the default) keeps the same checkout and calls the harness again until the hidden verifier passes. A positive number is a hard cap. After each attempt the last patch and hidden-test log land in `out/<task>.last/`. `$ / MU` is only defined on a pass.
 
-While the harness is running the suite prints file writes, short CLI events, and a `still running` heartbeat so a long think is not a silent hang.
+While the harness is running the suite prints the sandbox path, file writes, short CLI events, a spinner, and coloured pass/fail marks. No extra packages. `NO_COLOR=1` turns the colour off.
 
 | HARNESS | Binary | How we count tokens |
 | --- | --- | --- |

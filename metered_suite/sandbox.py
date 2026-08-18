@@ -226,7 +226,9 @@ def grade_patch(task_dir: Path, patch: str, work: Path) -> dict:
         if skip:
             return
         notes.append(text)
-        print(f"  {text}", flush=True)
+        from .term import dim, log
+
+        log(dim(f"  {text}"))
 
     try:
         run_command(

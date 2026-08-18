@@ -40,8 +40,8 @@ class VerifierBriefTests(unittest.TestCase):
                 }
             )
         text = buf.getvalue()
-        self.assertIn("    pass  test_delay_does_not_steal_older_ready", text)
-        self.assertIn("    fail  test_visibility_timeout_restores_and_counts_attempt", text)
+        self.assertIn("pass  test_delay_does_not_steal_older_ready", text)
+        self.assertIn("fail  test_visibility_timeout_restores_and_counts_attempt", text)
         self.assertIn("AssertionError: 0 != 1", text)
         self.assertIn("verifier 1/2 hidden tests", text)
 

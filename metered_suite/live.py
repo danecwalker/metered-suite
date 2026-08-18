@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,7 +20,9 @@ _SNIPPET_GAP = 0.4
 
 
 def _default_log(message: str) -> None:
-    print(f"  {message}", flush=True)
+    from .term import dim, log
+
+    log(dim(f"  {message}"))
 
 
 def _one_line(text: str, limit: int = 96) -> str:
@@ -228,10 +231,16 @@ def run_command(
             report_writes()
 
     def heartbeat() -> None:
+        from .term import color_enabled, set_spin_label
+
         while not stop.wait(_HEARTBEAT_EVERY):
+            elapsed = _format_elapsed(time.monotonic() - started)
+            if color_enabled(sys.stderr):
+                set_spin_label(f"harness {elapsed}")
+                continue
             idle = time.monotonic() - last_note
             if idle >= _HEARTBEAT_EVERY - 0.5:
-                note(f"still running {_format_elapsed(time.monotonic() - started)}")
+                note(f"still running {elapsed}")
 
     proc = subprocess.Popen(
         command,

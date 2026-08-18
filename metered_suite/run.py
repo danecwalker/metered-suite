@@ -22,6 +22,7 @@ from .sandbox import (
 from .score import score_json
 from .seal import seal_package
 from .tasks import OfficialTask, load_tasks, suite_lock
+from .term import bold, cyan, dim, green, log as _log, red, spin, yellow
 from .usage import Usage, read_sidecar, write_usage
 
 
@@ -33,10 +34,6 @@ def _slug(name: str) -> str:
         elif out and out[-1] != "-":
             out.append("-")
     return "".join(out).strip("-") or "model"
-
-
-def _log(message: str) -> None:
-    print(message, flush=True)
 
 
 def _command_preview(command: list[str], prompt: str = "") -> str:
@@ -160,9 +157,10 @@ def _score_attempt(task: OfficialTask, workspace: Path) -> str:
         return _read_output(workspace)
     try:
         patch = collect_patch(workspace)
-        _log(f"  collected patch ({len(patch.splitlines())} lines)")
-        _log("  verifier starting (docker, no network)")
-        report = grade_patch(task.task_dir, patch, workspace / "_grade")
+        _log(dim(f"  collected patch ({len(patch.splitlines())} lines)"))
+        _log(cyan("  verifier starting (docker, no network)"))
+        with spin("verifier"):
+            report = grade_patch(task.task_dir, patch, workspace / "_grade")
     except SandboxError as error:
         _log(f"  sandbox: {error}")
         return json.dumps({"ok": False, "reward": 0, "failed": 1, "error": str(error)})
@@ -174,20 +172,21 @@ def _log_verifier_report(report: dict) -> None:
     passed = [str(item) for item in (report.get("passedTests") or [])]
     failed = [str(item) for item in (report.get("failedTests") or report.get("errors") or [])]
     for name in passed:
-        _log(f"    pass  {name}")
+        _log(green(f"    ✓ pass  {name}"))
     for name in failed:
-        _log(f"    fail  {name}")
+        _log(red(f"    ✗ fail  {name}"))
     for detail in report.get("details") or []:
-        _log(f"    {_one_line(str(detail), 160)}")
+        _log(dim(f"    {_one_line(str(detail), 160)}"))
     if report.get("error") and not failed:
-        _log(f"    {_one_line(str(report['error']))}")
+        _log(red(f"    {_one_line(str(report['error']))}"))
     total = len(passed) + len(failed)
     if total:
-        _log(f"  verifier {len(passed)}/{total} hidden tests")
+        line = f"  verifier {len(passed)}/{total} hidden tests"
+        _log(green(line) if not failed else red(line))
     elif report.get("ok"):
-        _log("  verifier pass")
+        _log(green("  ✓ verifier pass"))
     else:
-        _log("  verifier fail")
+        _log(red("  ✗ verifier fail"))
 
 
 def _verifier_brief(output: str) -> str:
@@ -343,8 +342,16 @@ def run_suite(root: Path | None = None) -> Path:
         )
     effort = str(cfg.get("EFFORT") or "default")
     _log(
-        f"{spec['slug']}  {sku}  {effort}  {len(tasks)} tasks  "
-        f"{_attempt_label(max_attempts)}  timeout {timeout_sec}s"
+        bold(
+            f"{spec['slug']}  {sku}  {effort}  {len(tasks)} tasks  "
+            f"{_attempt_label(max_attempts)}  timeout {timeout_sec}s"
+        )
+    )
+    _log(
+        dim(
+            f"suite {SUITE_VERSION}  {lock['suiteHash'][:12]}  "
+            f"{lock['workMu']} MU  docker grades hidden tests"
+        )
     )
 
     for index, task in enumerate(tasks, start=1):
@@ -363,15 +370,20 @@ def run_suite(root: Path | None = None) -> Path:
                 if max_attempts > 0 and attempt > max_attempts:
                     break
                 attempts = attempt
-                _log(f"  attempt {attempt}/{_attempt_label(max_attempts)}")
+                _log(bold(f"  attempt {attempt}/{_attempt_label(max_attempts)}"))
                 if workspace is None:
                     workspace = Path(tempfile.mkdtemp(prefix=f"metered-{task.id}-"))
+                    _log(cyan(f"  sandbox dir  {workspace}"))
+                    _log(dim(f"  inspect with:  ls {workspace} && git -C {workspace} diff"))
                     if task.task_dir is not None:
                         try:
-                            seed_workspace(task.task_dir, workspace)
+                            with spin("seeding sandbox from docker"):
+                                seed_workspace(task.task_dir, workspace)
                         except SandboxError as error:
                             raise SystemExit(f"sandbox: {error}") from error
                     _init_workspace(workspace)
+                else:
+                    _log(cyan(f"  sandbox dir  {workspace}"))
                 prompt = (
                     task.prompt
                     if attempt == 1
@@ -391,9 +403,9 @@ def run_suite(root: Path | None = None) -> Path:
                     prompt_file,
                     effort,
                 )
-                _log(f"  {_command_preview(command, prompt)}")
+                _log(dim(f"  {_command_preview(command, prompt)}"))
                 if task.task_dir is not None and attempt == 1:
-                    _log(f"  sandbox {describe_sandbox(command)}")
+                    _log(dim(f"  mode {describe_sandbox(command)}"))
                 env = os.environ.copy()
                 env["METERED_TASK"] = task.id
                 env["METERED_WORKSPACE"] = str(workspace)
@@ -404,13 +416,14 @@ def run_suite(root: Path | None = None) -> Path:
                 exit_code: int | None = None
                 try:
                     if task.task_dir is not None:
-                        proc = run_agent(
-                            command,
-                            workspace=workspace,
-                            env=env,
-                            timeout=timeout_sec,
-                            task_dir=task.task_dir,
-                        )
+                        with spin("harness"):
+                            proc = run_agent(
+                                command,
+                                workspace=workspace,
+                                env=env,
+                                timeout=timeout_sec,
+                                task_dir=task.task_dir,
+                            )
                     else:
                         proc = subprocess.run(
                             command,
@@ -436,14 +449,16 @@ def run_suite(root: Path | None = None) -> Path:
                 turn_usage = _collect_usage(spec["slug"], stdout, stderr, workspace)
                 usage = usage.add(turn_usage)
                 if timed_out:
-                    status = "  timeout"
+                    status = yellow("  timeout")
+                elif exit_code == 0:
+                    status = dim(f"  exit {exit_code}")
                 else:
-                    status = f"  exit {exit_code}"
+                    status = yellow(f"  exit {exit_code}")
                 if turn_usage.counted():
-                    status = f"{status}  {_usage_brief(turn_usage)}"
+                    status = f"{status}  {dim(_usage_brief(turn_usage))}"
                 hint = _cli_error_brief(stdout, stderr)
                 if hint and (timed_out or exit_code not in {0, None} or not turn_usage.counted()):
-                    status = f"{status}  {hint}"
+                    status = f"{status}  {red(hint)}"
                 _log(status)
                 output = _score_attempt(task, workspace)
                 passed = score_json(output, task.expected)
@@ -471,14 +486,14 @@ def run_suite(root: Path | None = None) -> Path:
                 )
                 sig = (hash(patch_sig), failed)
                 if last_sig == sig:
-                    _log("  no progress, new checkout")
+                    _log(yellow("  no progress, new checkout"))
                     shutil.rmtree(workspace, ignore_errors=True)
                     workspace = None
                     reset_next = True
                     last_sig = None
                 else:
                     last_sig = sig
-                    _log("  same checkout, continuing until pass")
+                    _log(yellow("  same checkout, continuing until pass"))
         finally:
             if workspace is not None:
                 shutil.rmtree(workspace, ignore_errors=True)
@@ -494,7 +509,8 @@ def run_suite(root: Path | None = None) -> Path:
         note = ""
         if not usage.counted():
             note = " - no token usage from the CLI; this task cannot define $ / MU"
-        _log(f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s){note}")
+        summary = f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s){note}"
+        _log(green(f"✓ {summary}") if passed else red(f"✗ {summary}"))
 
     finished = datetime.now(timezone.utc).isoformat()
     stack = {
@@ -523,8 +539,9 @@ def run_suite(root: Path | None = None) -> Path:
     name = f"{stack['modelSlug']}-{stack['harnessSlug']}-{stack['setting']}.metered.json"
     path = out_dir / name
     path.write_text(json.dumps(pkg, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    _log(f"wrote {path}")
-    _log(f"passed {pkg['totals']['passed']}/{pkg['totals']['tasks']}")
+    _log(cyan(f"wrote {path}"))
+    totals_line = f"passed {pkg['totals']['passed']}/{pkg['totals']['tasks']}"
+    _log(green(totals_line) if pkg["totals"]["passed"] == pkg["totals"]["tasks"] else red(totals_line))
     billed = (
         int(pkg["totals"]["input"])
         + int(pkg["totals"]["output"])
@@ -532,7 +549,9 @@ def run_suite(root: Path | None = None) -> Path:
     )
     if billed <= 0:
         _log(
-            "warning: package has no token counts. "
-            "Metered will not rank it as $ / MU."
+            yellow(
+                "warning: package has no token counts. "
+                "Metered will not rank it as $ / MU."
+            )
         )
     return path
