@@ -59,6 +59,17 @@ def cyan(text: str) -> str:
     return paint(text, _CYAN)
 
 
+def format_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
 class Spinner:
     def __init__(self, stream: TextIO | None = None) -> None:
         self.stream = stream or sys.stderr

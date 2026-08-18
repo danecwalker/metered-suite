@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from .sandbox import (
 from .score import score_json
 from .seal import seal_package
 from .tasks import OfficialTask, load_tasks, suite_lock
-from .term import bold, cyan, dim, green, log as _log, red, spin, yellow
+from .term import bold, cyan, dim, format_elapsed, green, log as _log, red, spin, yellow
 from .usage import Usage, read_sidecar, write_usage
 
 
@@ -331,6 +332,7 @@ def run_suite(root: Path | None = None) -> Path:
     tasks = load_tasks()
     lock = suite_lock(tasks)
     started = datetime.now(timezone.utc).isoformat()
+    t0 = time.monotonic()
     raw_tasks: list[dict] = []
     max_attempts = int(cfg["MAX_ATTEMPTS"]) if cfg.get("MAX_ATTEMPTS") is not None else 0
     timeout_sec = int(cfg.get("TIMEOUT_SEC") or 45 * 60)
@@ -539,19 +541,31 @@ def run_suite(root: Path | None = None) -> Path:
     name = f"{stack['modelSlug']}-{stack['harnessSlug']}-{stack['setting']}.metered.json"
     path = out_dir / name
     path.write_text(json.dumps(pkg, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    _log(cyan(f"wrote {path}"))
-    totals_line = f"passed {pkg['totals']['passed']}/{pkg['totals']['tasks']}"
-    _log(green(totals_line) if pkg["totals"]["passed"] == pkg["totals"]["tasks"] else red(totals_line))
-    billed = (
-        int(pkg["totals"]["input"])
-        + int(pkg["totals"]["output"])
-        + int(pkg["totals"]["reasoning"])
+    _log_run_summary(pkg, path, raw_tasks, time.monotonic() - t0)
+    return path
+
+
+def _log_run_summary(pkg: dict, path: Path, raw_tasks: list[dict], elapsed: float) -> None:
+    totals = pkg["totals"]
+    attempts = sum(int(task.get("attempts") or 0) for task in raw_tasks)
+    complete = int(totals["passed"]) == int(totals["tasks"])
+    _log("")
+    _log(bold("summary"))
+    result = f"{totals['passed']}/{totals['tasks']} passed"
+    _log(green(f"  {result}") if complete else red(f"  {result}"))
+    _log(f"  time      {format_elapsed(elapsed)}")
+    _log(f"  attempts  {attempts}")
+    _log(
+        f"  tokens    in={totals['input']} out={totals['output']} "
+        f"reasoning={totals['reasoning']} cacheHit={totals['cacheHit']}"
     )
+    _log(cyan(f"  wrote     {path}"))
+    billed = int(totals["input"]) + int(totals["output"]) + int(totals["reasoning"])
     if billed <= 0:
         _log(
             yellow(
-                "warning: package has no token counts. "
-                "Metered will not rank it as $ / MU."
+                "  warning   no token counts. Metered will not rank this as $ / MU."
             )
         )
-    return path
+    elif not complete:
+        _log(yellow("  warning   incomplete. $ / MU needs every official task to pass."))

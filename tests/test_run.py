@@ -163,8 +163,11 @@ class RunProgressTests(unittest.TestCase):
             self.assertIn("  exit 0  in=10 out=2 reasoning=1 cacheHit=3", text)
             self.assertIn("normalize: pass after 1 attempt(s)", text)
             self.assertIn("fertility: pass after 1 attempt(s)", text)
-            self.assertIn(f"wrote {path}", text)
-            self.assertIn("passed 2/2", text)
+            self.assertIn(f"wrote     {path}", text)
+            self.assertIn("2/2 passed", text)
+            self.assertIn("summary", text)
+            self.assertIn("time", text)
+            self.assertIn("attempts  2", text)
             self.assertNotIn("SECRET_PROMPT_BODY", text)
             self.assertNotIn("Another secret prompt", text)
             self.assertNotIn("—", text)
@@ -208,7 +211,8 @@ class RunProgressTests(unittest.TestCase):
                 "fertility: fail after 1 attempt(s) - no token usage from the CLI; this task cannot define $ / MU",
                 text,
             )
-            self.assertIn("Metered will not rank it as $ / MU.", text)
+            self.assertIn("Metered will not rank this as $ / MU.", text)
+            self.assertIn("summary", text)
             self.assertNotIn("—", text)
             self.assertNotIn("$ / M ET", text)
             self.assertNotIn("secret task prompt", text)

@@ -156,14 +156,9 @@ def _watch_snapshot(root: Path) -> dict[Path, tuple[int, int]]:
 
 
 def _format_elapsed(seconds: float) -> str:
-    total = max(0, int(seconds))
-    minutes, secs = divmod(total, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h{minutes:02d}m{secs:02d}s"
-    if minutes:
-        return f"{minutes}m{secs:02d}s"
-    return f"{secs}s"
+    from .term import format_elapsed
+
+    return format_elapsed(seconds)
 
 
 def run_command(
