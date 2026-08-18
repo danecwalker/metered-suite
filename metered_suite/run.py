@@ -199,18 +199,95 @@ def _attempt_label(max_attempts: int) -> str:
     return "until pass" if max_attempts <= 0 else str(max_attempts)
 
 
-def _follow_up_prompt(task: OfficialTask, attempt: int, previous: str) -> str:
-    why = _verifier_brief(previous)
-    extra = f"Failed checks: {why}\n" if why else ""
-    return (
-        f"{task.prompt}\n\n---\n"
-        f"Attempt {attempt}. Same checkout as last time. Do not start over.\n"
-        "The hidden verifier still fails. A complete finish is required.\n"
-        f"{extra}"
-        f"Previous verifier output:\n{previous}\n"
-        "Fix the existing code until the hidden verifier returns "
-        '{"ok":true,"reward":1,"failed":0}.\n'
+_FAIL_HINTS = {
+    "test_visibility_timeout_restores_and_counts_attempt": (
+        "After lease, ready_count must be 0 and leased_count 1. When the "
+        "visibility window ends, the same message is ready again and attempts + 1."
+    ),
+    "test_nack_then_poison": (
+        "nack with a matching lease_id increments attempts. After max_attempts "
+        "failed nacks or expiries, lease returns None and dead_count increases."
+    ),
+    "test_persist_across_processes": (
+        "A new Queue(path=...) must reload leased state (leased_count and lease_id). "
+        "ack on that reloaded queue deletes the message."
+    ),
+    "test_delay_does_not_steal_older_ready": (
+        "lease the oldest ready message (available_at, then id). A delayed newer "
+        "message must not be leased before an older ready one."
+    ),
+    "test_visibility_expires_and_counts_attempt": (
+        "Visibility expiry must restore the message and increment attempts."
+    ),
+    "test_nack_increments_attempts": (
+        "nack with the active lease_id increments attempts."
+    ),
+    "test_dead_after_max_attempts": (
+        "After max_attempts failed attempts the message is dead and not leaseable."
+    ),
+    "test_persist_leased_message": (
+        "Disk state must include the active lease, not only the body list."
+    ),
+}
+
+
+def _parse_report(previous: str) -> dict:
+    try:
+        data = json.loads(previous)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _follow_up_prompt(
+    task: OfficialTask,
+    attempt: int,
+    previous: str,
+    *,
+    reset: bool = False,
+) -> str:
+    report = _parse_report(previous)
+    failed = [
+        str(item)
+        for item in (report.get("failedTests") or report.get("errors") or [])
+    ]
+    passed = [str(item) for item in (report.get("passedTests") or [])]
+    details = [str(item) for item in (report.get("details") or [])]
+    lines = [task.prompt, "", "---", f"Attempt {attempt}."]
+    if reset:
+        lines.append(
+            "Previous turn made no progress, so this is a fresh checkout. "
+            "Implement the full contract. Do not hardcode fixtures."
+        )
+    else:
+        lines.append(
+            "Same checkout as last time. Keep the files you already changed. "
+            "Do not start over from scratch."
+        )
+    lines.append(
+        "First make the public tests green: python3 -m unittest discover -s tests -v"
     )
+    lines.append(
+        "Then stop. Hidden tests use different numbers than the public ones."
+    )
+    if passed:
+        lines.append("Hidden tests that already passed: " + ", ".join(passed))
+    if failed:
+        lines.append("Hidden tests that still fail:")
+        for name in failed[:8]:
+            hint = _FAIL_HINTS.get(name, "Re-read that required behavior in the prompt.")
+            lines.append(f"- {name}: {hint}")
+    if details:
+        lines.append("Last assertion lines:")
+        for item in details[:6]:
+            lines.append(f"- {_one_line(item, 140)}")
+    if report.get("error") and not failed:
+        lines.append(f"Verifier error: {_one_line(str(report['error']))}")
+    lines.append(
+        "A complete finish is required. The hidden verifier must return "
+        '{"ok":true,"reward":1,"failed":0}.'
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _keep_attempt(out_dir: Path, task_id: str, attempt: int, workspace: Path, output: str) -> None:
@@ -265,6 +342,8 @@ def run_suite(root: Path | None = None) -> Path:
         attempts = 0
         passed = False
         workspace: Path | None = None
+        last_sig: tuple | None = None
+        reset_next = False
         _log(f"task {index}/{len(tasks)}  {task.id}")
         try:
             attempt = 0
@@ -285,8 +364,11 @@ def run_suite(root: Path | None = None) -> Path:
                 prompt = (
                     task.prompt
                     if attempt == 1
-                    else _follow_up_prompt(task, attempt, output)
+                    else _follow_up_prompt(
+                        task, attempt, output, reset=reset_next
+                    )
                 )
+                reset_next = False
                 prompt_file = workspace / "instruction.md"
                 prompt_file.write_text(prompt, encoding="utf-8")
                 flags = list(cfg.get("FLAGS") or [])
@@ -360,7 +442,32 @@ def run_suite(root: Path | None = None) -> Path:
                     break
                 if max_attempts > 0 and attempt >= max_attempts:
                     break
-                _log("  same checkout, continuing until pass")
+                try:
+                    report = json.loads(output)
+                except json.JSONDecodeError:
+                    report = {}
+                failed = tuple(
+                    str(item)
+                    for item in (
+                        (report.get("failedTests") if isinstance(report, dict) else None)
+                        or (report.get("errors") if isinstance(report, dict) else None)
+                        or []
+                    )
+                )
+                patch_path = workspace / "_grade" / "in" / "changes.patch"
+                patch_sig = (
+                    patch_path.read_bytes() if patch_path.exists() else b""
+                )
+                sig = (hash(patch_sig), failed)
+                if last_sig == sig:
+                    _log("  no progress, new checkout")
+                    shutil.rmtree(workspace, ignore_errors=True)
+                    workspace = None
+                    reset_next = True
+                    last_sig = None
+                else:
+                    last_sig = sig
+                    _log("  same checkout, continuing until pass")
         finally:
             if workspace is not None:
                 shutil.rmtree(workspace, ignore_errors=True)

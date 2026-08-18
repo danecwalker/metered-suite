@@ -1,5 +1,5 @@
 # Verifier image: pristine repo + held-out tests. No agent tools.
-FROM metered-suite-agent:py2
+FROM metered-suite-agent:py3.1
 COPY tests/ /hidden-tests/
 COPY tests/test.sh /hidden-tests/test.sh
 RUN chmod +x /hidden-tests/test.sh

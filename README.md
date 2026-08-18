@@ -33,8 +33,8 @@ One Harbor-shaped job (`durable-queue`), in the style of [DeepSWE](https://deeps
 
 Same two-container split as DeepSWE v1.1 / Pier:
 
-1. **Agent.** Workspace is copied out of `metered-suite-agent:py2` (repo + `base` commit only). Hidden tests and the reference solution never enter that tree. On Linux the harness CLI runs inside that container. On macOS the official CLIs are Darwin binaries, so the process stays on the host, jailed to that checkout; it still cannot see the grader.
-2. **Verifier.** After the CLI exits we collect a git patch and apply it in `metered-suite-verify:py2` with `--network none`. Held-out tests run there. The site re-scores the verifier JSON (`ok`, `reward`) against the lock.
+1. **Agent.** Workspace is copied out of `metered-suite-agent:py3.1` (repo + `base` commit only). Hidden tests and the reference solution never enter that tree. On Linux the harness CLI runs inside that container. On macOS the official CLIs are Darwin binaries, so the process stays on the host, jailed to that checkout; it still cannot see the grader.
+2. **Verifier.** After the CLI exits we collect a git patch and apply it in `metered-suite-verify:py3.1` with `--network none`. Held-out tests run there. The site re-scores the verifier JSON (`ok`, `reward`) against the lock.
 
 `$ / MU` needs the job to pass **and** real token counts from the harness adapter. Zero usage is not a $0 rank.
 

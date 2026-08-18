@@ -12,6 +12,7 @@ from unittest.mock import patch
 from metered_suite.identity import build_command, resolve_harness
 from metered_suite.run import (
     _command_preview,
+    _follow_up_prompt,
     _log_verifier_report,
     _verifier_brief,
     run_suite,
@@ -43,6 +44,33 @@ class VerifierBriefTests(unittest.TestCase):
         self.assertIn("    fail  test_visibility_timeout_restores_and_counts_attempt", text)
         self.assertIn("AssertionError: 0 != 1", text)
         self.assertIn("verifier 1/2 hidden tests", text)
+
+    def test_follow_up_prompt_is_actionable(self) -> None:
+        task = OfficialTask(
+            id="queue",
+            label="queue",
+            prompt="Fix the queue",
+            prompt_hash="c",
+            expected={"ok": True},
+            work_chars=10,
+        )
+        previous = json.dumps(
+            {
+                "ok": False,
+                "failedTests": ["test_nack_then_poison"],
+                "passedTests": ["test_delay_does_not_steal_older_ready"],
+                "details": ["AssertionError: 0 != 1"],
+            }
+        )
+        text = _follow_up_prompt(task, 2, previous)
+        self.assertIn("Same checkout", text)
+        self.assertIn("python3 -m unittest discover -s tests -v", text)
+        self.assertIn("test_nack_then_poison", text)
+        self.assertIn("increments attempts", text)
+        self.assertIn("already passed", text)
+        self.assertNotIn("SECRET", text)
+        reset = _follow_up_prompt(task, 3, previous, reset=True)
+        self.assertIn("fresh checkout", reset)
 
 
 class CommandPreviewTests(unittest.TestCase):

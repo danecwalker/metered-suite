@@ -35,8 +35,8 @@ from pathlib import Path
 
 from .live import run_command
 
-AGENT_IMAGE = "metered-suite-agent:py2"
-VERIFY_IMAGE = "metered-suite-verify:py2.2"
+AGENT_IMAGE = "metered-suite-agent:py3.1"
+VERIFY_IMAGE = "metered-suite-verify:py3.1"
 
 _API_ENV_PREFIXES = (
     "ANTHROPIC",
@@ -212,8 +212,21 @@ def grade_patch(task_dir: Path, patch: str, work: Path) -> dict:
     notes: list[str] = []
 
     def emit(message: str) -> None:
-        notes.append(message)
-        print(f"  {message}", flush=True)
+        text = (message or "").strip()
+        if not text:
+            return
+        skip = (
+            text.startswith("====")
+            or text.startswith("Traceback")
+            or text.startswith("File ")
+            or text.startswith("self.")
+            or text.startswith("- ")
+            or text.startswith("+ ")
+        )
+        if skip:
+            return
+        notes.append(text)
+        print(f"  {text}", flush=True)
 
     try:
         run_command(
