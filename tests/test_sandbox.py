@@ -14,6 +14,7 @@ from metered_suite.sandbox import (
     ensure_images,
     grade_patch,
     is_linux_binary,
+    parse_unittest_log,
     seed_workspace,
 )
 
@@ -45,6 +46,21 @@ class BinaryTests(unittest.TestCase):
             text = describe_sandbox([str(path)])
             self.assertIn("docker-verifier", text)
             self.assertNotIn("docker-agent +", text)
+
+
+class UnittestLogTests(unittest.TestCase):
+    def test_splits_ok_and_fail(self) -> None:
+        raw = (
+            "test_delay (test_hidden.HiddenQueueTests) ... ok\n"
+            "test_visibility (test_hidden.HiddenQueueTests) ... FAIL\n"
+            "\n"
+            "FAIL: test_visibility (test_hidden.HiddenQueueTests)\n"
+            "AssertionError: 0 != 1\n"
+        )
+        parsed = parse_unittest_log(raw)
+        self.assertEqual(parsed["passedTests"], ["test_delay"])
+        self.assertEqual(parsed["failedTests"], ["test_visibility"])
+        self.assertIn("AssertionError: 0 != 1", parsed["details"])
 
 
 class SeatbeltTests(unittest.TestCase):
@@ -114,7 +130,8 @@ class DockerGradeTests(unittest.TestCase):
             empty = grade_patch(TASK, "", work / "empty")
             self.assertFalse(empty.get("ok"))
             self.assertEqual(empty.get("reward"), 0)
-            self.assertTrue(empty.get("errors") or empty.get("error"))
+            self.assertTrue(empty.get("errors") or empty.get("error") or empty.get("failedTests"))
+            self.assertTrue(empty.get("failedTests"))
             from metered_suite.sandbox import collect_patch
 
             seeded = work / "seeded"

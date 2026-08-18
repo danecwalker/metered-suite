@@ -150,11 +150,33 @@ def _score_attempt(task: OfficialTask, workspace: Path) -> str:
     try:
         patch = collect_patch(workspace)
         _log(f"  collected patch ({len(patch.splitlines())} lines)")
+        _log("  verifier starting (docker, no network)")
         report = grade_patch(task.task_dir, patch, workspace / "_grade")
     except SandboxError as error:
         _log(f"  sandbox: {error}")
         return json.dumps({"ok": False, "reward": 0, "failed": 1, "error": str(error)})
+    _log_verifier_report(report)
     return json.dumps(report, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _log_verifier_report(report: dict) -> None:
+    passed = [str(item) for item in (report.get("passedTests") or [])]
+    failed = [str(item) for item in (report.get("failedTests") or report.get("errors") or [])]
+    for name in passed:
+        _log(f"    pass  {name}")
+    for name in failed:
+        _log(f"    fail  {name}")
+    for detail in report.get("details") or []:
+        _log(f"    {_one_line(str(detail), 160)}")
+    if report.get("error") and not failed:
+        _log(f"    {_one_line(str(report['error']))}")
+    total = len(passed) + len(failed)
+    if total:
+        _log(f"  verifier {len(passed)}/{total} hidden tests")
+    elif report.get("ok"):
+        _log("  verifier pass")
+    else:
+        _log("  verifier fail")
 
 
 def _verifier_brief(output: str) -> str:
@@ -164,9 +186,9 @@ def _verifier_brief(output: str) -> str:
         return _one_line(output)
     if not isinstance(data, dict):
         return ""
-    errors = data.get("errors")
-    if isinstance(errors, list) and errors:
-        return "failed " + ", ".join(str(item) for item in errors[:8])
+    failed = data.get("failedTests") or data.get("errors")
+    if isinstance(failed, list) and failed:
+        return "failed " + ", ".join(str(item) for item in failed[:8])
     err = data.get("error")
     if err:
         return _one_line(str(err))
@@ -332,13 +354,6 @@ def run_suite(root: Path | None = None) -> Path:
                 _log(status)
                 output = _score_attempt(task, workspace)
                 passed = score_json(output, task.expected)
-                why = _verifier_brief(output)
-                if passed:
-                    _log("  verifier pass")
-                elif why:
-                    _log(f"  verifier fail  {why}")
-                else:
-                    _log("  verifier fail")
                 if task.task_dir is not None:
                     _keep_attempt(root / "out", task.id, attempt, workspace, output)
                 if passed:

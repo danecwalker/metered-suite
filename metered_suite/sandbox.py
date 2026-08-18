@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,7 @@ from pathlib import Path
 from .live import run_command
 
 AGENT_IMAGE = "metered-suite-agent:py2"
-VERIFY_IMAGE = "metered-suite-verify:py2.1"
+VERIFY_IMAGE = "metered-suite-verify:py2.2"
 
 _API_ENV_PREFIXES = (
     "ANTHROPIC",
@@ -159,6 +160,40 @@ def collect_patch(workspace: Path) -> str:
     return proc.stdout or ""
 
 
+_UNIT_LINE = re.compile(
+    r"^(\S+) \([^)]+\) \.\.\. (ok|FAIL|ERROR|skipped).*$",
+    re.MULTILINE,
+)
+
+
+def parse_unittest_log(text: str) -> dict:
+    """Pull pass/fail names and assertion lines out of unittest -v output."""
+    passed: list[str] = []
+    failed: list[str] = []
+    for match in _UNIT_LINE.finditer(text or ""):
+        name, status = match.group(1), match.group(2)
+        if status == "ok":
+            passed.append(name)
+        elif status in {"FAIL", "ERROR"}:
+            failed.append(name)
+    if not failed:
+        failed = re.findall(r"^(?:FAIL|ERROR): (\S+)", text or "", re.MULTILINE)
+    details: list[str] = []
+    for match in re.finditer(
+        r"^(?:AssertionError|Error|TypeError|ValueError|AttributeError): (.+)$",
+        text or "",
+        re.MULTILINE,
+    ):
+        line = match.group(0).strip()
+        if line not in details:
+            details.append(line)
+    return {
+        "passedTests": passed,
+        "failedTests": failed,
+        "details": details[:8],
+    }
+
+
 def _verifier_timeout() -> int:
     raw = os.environ.get("METERED_VERIFY_TIMEOUT", "120")
     try:
@@ -174,43 +209,65 @@ def grade_patch(task_dir: Path, patch: str, work: Path) -> dict:
     incoming.mkdir(parents=True, exist_ok=True)
     outgoing.mkdir(parents=True, exist_ok=True)
     (incoming / "changes.patch").write_text(patch, encoding="utf-8")
+    notes: list[str] = []
+
+    def emit(message: str) -> None:
+        notes.append(message)
+        print(f"  {message}", flush=True)
+
     try:
-        _docker(
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--memory",
-            "2g",
-            "--cpus",
-            "2",
-            "--pids-limit",
-            "256",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "-v",
-            f"{incoming}:/in:ro",
-            "-v",
-            f"{outgoing}:/out",
-            VERIFY_IMAGE,
+        run_command(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--memory",
+                "2g",
+                "--cpus",
+                "2",
+                "--pids-limit",
+                "256",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "-v",
+                f"{incoming}:/in:ro",
+                "-v",
+                f"{outgoing}:/out",
+                VERIFY_IMAGE,
+            ],
+            cwd=None,
+            env=os.environ.copy(),
             timeout=_verifier_timeout(),
-            capture_output=True,
-            text=True,
+            log=emit,
         )
     except subprocess.TimeoutExpired as error:
         raise SandboxError("verifier timed out") from error
-    except subprocess.CalledProcessError as error:
-        raise SandboxError(
-            f"verifier container failed: {(error.stderr or error.stdout or '')[-400:]}"
-        ) from error
+    except SandboxError:
+        raise
     reward = outgoing / "reward.json"
     if not reward.exists():
-        return {"ok": False, "reward": 0, "failed": 1}
-    data = json.loads(reward.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        return {"ok": False, "reward": 0, "failed": 1}
+        data: dict = {"ok": False, "reward": 0, "failed": 1, "error": "no reward.json"}
+    else:
+        loaded = json.loads(reward.read_text(encoding="utf-8"))
+        data = loaded if isinstance(loaded, dict) else {"ok": False, "reward": 0, "failed": 1}
+    log_text = ""
+    log_path = outgoing / "unittest.log"
+    if log_path.exists():
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    parsed = parse_unittest_log(log_text)
+    if parsed["passedTests"] and "passedTests" not in data:
+        data["passedTests"] = parsed["passedTests"]
+    if parsed["failedTests"] and "failedTests" not in data:
+        data["failedTests"] = parsed["failedTests"]
+        data.setdefault("errors", parsed["failedTests"][:12])
+    if parsed["details"] and "details" not in data:
+        data["details"] = parsed["details"]
+    if notes and "log" not in data:
+        data["log"] = notes[-20:]
     return data
 
 

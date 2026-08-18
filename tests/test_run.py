@@ -10,7 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from metered_suite.identity import build_command, resolve_harness
-from metered_suite.run import _command_preview, _verifier_brief, run_suite
+from metered_suite.run import (
+    _command_preview,
+    _log_verifier_report,
+    _verifier_brief,
+    run_suite,
+)
 from metered_suite.tasks import OfficialTask
 
 
@@ -21,6 +26,23 @@ class VerifierBriefTests(unittest.TestCase):
         )
         self.assertIn("test_visibility", text)
         self.assertIn("test_persist", text)
+
+    def test_report_logs_each_hidden_test(self) -> None:
+        buf = StringIO()
+        with redirect_stdout(buf):
+            _log_verifier_report(
+                {
+                    "ok": False,
+                    "passedTests": ["test_delay_does_not_steal_older_ready"],
+                    "failedTests": ["test_visibility_timeout_restores_and_counts_attempt"],
+                    "details": ["AssertionError: 0 != 1"],
+                }
+            )
+        text = buf.getvalue()
+        self.assertIn("    pass  test_delay_does_not_steal_older_ready", text)
+        self.assertIn("    fail  test_visibility_timeout_restores_and_counts_attempt", text)
+        self.assertIn("AssertionError: 0 != 1", text)
+        self.assertIn("verifier 1/2 hidden tests", text)
 
 
 class CommandPreviewTests(unittest.TestCase):
