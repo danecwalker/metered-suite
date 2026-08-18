@@ -10,6 +10,7 @@ from .usage import (
     Usage,
     best_usage,
     json_blobs,
+    pick_richer,
     usage_from_fields,
     usage_from_mapping,
 )
@@ -166,8 +167,7 @@ def parse_claude(stdout: str, stderr: str, workspace: Path) -> Usage:
             for item in models.values():
                 if isinstance(item, dict):
                     summed = summed.add(usage_from_fields(item, source="cli"))
-            if summed.counted():
-                parsed = summed
+            parsed = pick_richer(parsed, summed)
         if parsed.counted():
             last = parsed
     return last if last.counted() else best_usage(blobs)
@@ -228,7 +228,8 @@ def parse_gemini(stdout: str, stderr: str, workspace: Path) -> Usage:
 
 
 def parse_grok(stdout: str, stderr: str, workspace: Path) -> Usage:
-    return best_usage(_blobs(stdout, stderr))
+    parsed = parse_claude(stdout, stderr, workspace)
+    return parsed if parsed.counted() else best_usage(_blobs(stdout, stderr))
 
 
 def parse_qwen(stdout: str, stderr: str, workspace: Path) -> Usage:

@@ -71,7 +71,8 @@ def _command_preview(command: list[str], prompt: str = "") -> str:
 def _usage_brief(usage: Usage) -> str:
     return (
         f"in={usage.input} out={usage.output} "
-        f"reasoning={usage.reasoning} cacheHit={usage.cache_hit}"
+        f"reasoning={usage.reasoning} cacheHit={usage.cache_hit} "
+        f"cacheWrite={usage.cache_write}"
     )
 
 
@@ -557,10 +558,17 @@ def _log_run_summary(pkg: dict, path: Path, raw_tasks: list[dict], elapsed: floa
     _log(f"  attempts  {attempts}")
     _log(
         f"  tokens    in={totals['input']} out={totals['output']} "
-        f"reasoning={totals['reasoning']} cacheHit={totals['cacheHit']}"
+        f"reasoning={totals['reasoning']} cacheHit={totals['cacheHit']} "
+        f"cacheWrite={totals.get('cacheWrite') or 0}"
     )
     _log(cyan(f"  wrote     {path}"))
-    billed = int(totals["input"]) + int(totals["output"]) + int(totals["reasoning"])
+    billed = (
+        int(totals["input"])
+        + int(totals["output"])
+        + int(totals["reasoning"])
+        + int(totals["cacheHit"])
+        + int(totals.get("cacheWrite") or 0)
+    )
     if billed <= 0:
         _log(
             yellow(

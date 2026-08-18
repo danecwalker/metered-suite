@@ -160,7 +160,9 @@ class RunProgressTests(unittest.TestCase):
             self.assertIn("task 2/2  fertility", text)
             self.assertIn("  attempt 1/2", text)
             self.assertIn("  grok --single --model grok-4.6", text)
-            self.assertIn("  exit 0  in=10 out=2 reasoning=1 cacheHit=3", text)
+            self.assertIn(
+                "  exit 0  in=10 out=2 reasoning=1 cacheHit=3 cacheWrite=0", text
+            )
             self.assertIn("normalize: pass after 1 attempt(s)", text)
             self.assertIn("fertility: pass after 1 attempt(s)", text)
             self.assertIn(f"wrote     {path}", text)

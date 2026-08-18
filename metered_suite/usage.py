@@ -41,6 +41,7 @@ REASONING_KEYS = (
     "thinkingTokens",
     "thoughts",
     "thoughts_tokens",
+    "thoughtsTokenCount",
 )
 
 CACHE_KEYS = (
@@ -50,11 +51,55 @@ CACHE_KEYS = (
     "cachedInputTokens",
     "cache_read_input_tokens",
     "cacheReadInputTokens",
+    "cache_read_tokens",
+    "cacheReadTokens",
+    "cachedReadTokens",
+    "cached_read_tokens",
+    "cached_tokens",
+    "cachedTokens",
+    "cachedContentTokenCount",
     "input_cache_read",
     "inputCacheRead",
     "cached",
     "cache_read",
     "cacheRead",
+)
+
+CACHE_WRITE_KEYS = (
+    "cacheWrite",
+    "cache_write",
+    "cache_creation_input_tokens",
+    "cacheCreationInputTokens",
+    "cache_creation_tokens",
+    "cacheCreationTokens",
+    "cache_write_input_tokens",
+    "cacheWriteInputTokens",
+    "cache_write_tokens",
+    "cacheWriteTokens",
+    "input_cache_write",
+    "inputCacheWrite",
+    "input_cache_creation",
+    "inputCacheCreation",
+)
+
+NESTED_USAGE_KEYS = (
+    "prompt_tokens_details",
+    "promptTokensDetails",
+    "input_tokens_details",
+    "inputTokensDetails",
+    "completion_tokens_details",
+    "completionTokensDetails",
+    "output_tokens_details",
+    "outputTokensDetails",
+    "cache_creation",
+    "cacheCreation",
+)
+
+EPHEMERAL_WRITE_KEYS = (
+    "ephemeral_5m_input_tokens",
+    "ephemeral_1h_input_tokens",
+    "ephemeral5mInputTokens",
+    "ephemeral1hInputTokens",
 )
 
 
@@ -64,13 +109,14 @@ class Usage:
     output: int = 0
     reasoning: int = 0
     cache_hit: int = 0
+    cache_write: int = 0
     source: str = "none"
 
     def billed(self) -> int:
         return self.input + self.output + self.reasoning
 
     def counted(self) -> bool:
-        return self.billed() + self.cache_hit > 0
+        return self.billed() + self.cache_hit + self.cache_write > 0
 
     def add(self, other: Usage) -> Usage:
         if not other.counted():
@@ -82,6 +128,7 @@ class Usage:
             output=self.output + other.output,
             reasoning=self.reasoning + other.reasoning,
             cache_hit=self.cache_hit + other.cache_hit,
+            cache_write=self.cache_write + other.cache_write,
             source=self.source if self.source != "none" else other.source,
         )
 
@@ -91,7 +138,11 @@ class Usage:
             "output": self.output,
             "reasoning": self.reasoning,
             "cacheHit": self.cache_hit,
+            "cacheWrite": self.cache_write,
         }
+
+    def score(self) -> int:
+        return self.billed() + self.cache_hit + self.cache_write
 
 
 def as_int(value: Any) -> int:
@@ -115,16 +166,56 @@ def first_int(obj: dict[str, Any], keys: tuple[str, ...]) -> int:
     return 0
 
 
-def usage_from_fields(obj: dict[str, Any], *, source: str = "cli") -> Usage:
+def _flatten_usage(obj: dict[str, Any]) -> dict[str, Any]:
+    flat = dict(obj)
     cache_obj = obj.get("cache") if isinstance(obj.get("cache"), dict) else {}
-    cache_hit = first_int(obj, CACHE_KEYS) or first_int(
+    for key, value in cache_obj.items():
+        if key not in flat:
+            flat[key] = value
+    for key in NESTED_USAGE_KEYS:
+        inner = obj.get(key)
+        if not isinstance(inner, dict):
+            continue
+        for nested_key, value in inner.items():
+            if nested_key not in flat:
+                flat[nested_key] = value
+    return flat
+
+
+def pick_richer(left: Usage, right: Usage) -> Usage:
+    """Keep the fuller spend object. modelUsage often omits cache writes."""
+    if not left.counted():
+        return right
+    if not right.counted():
+        return left
+    if left.score() != right.score():
+        return left if left.score() > right.score() else right
+    if left.cache_write != right.cache_write:
+        return left if left.cache_write > right.cache_write else right
+    if left.reasoning != right.reasoning:
+        return left if left.reasoning > right.reasoning else right
+    return left
+
+
+def usage_from_fields(obj: dict[str, Any], *, source: str = "cli") -> Usage:
+    flat = _flatten_usage(obj)
+    cache_obj = obj.get("cache") if isinstance(obj.get("cache"), dict) else {}
+    cache_hit = first_int(flat, CACHE_KEYS) or first_int(
         cache_obj, ("read", "hit", "cached", "cache_read")
     )
+    cache_write = first_int(flat, CACHE_WRITE_KEYS) or first_int(
+        cache_obj, ("write", "creation", "create", "cache_write")
+    )
+    if not cache_write:
+        creation = obj.get("cache_creation") or obj.get("cacheCreation")
+        if isinstance(creation, dict):
+            cache_write = sum(as_int(creation.get(key)) for key in EPHEMERAL_WRITE_KEYS)
     usage = Usage(
-        input=first_int(obj, INPUT_KEYS),
-        output=first_int(obj, OUTPUT_KEYS),
-        reasoning=first_int(obj, REASONING_KEYS),
+        input=first_int(flat, INPUT_KEYS),
+        output=first_int(flat, OUTPUT_KEYS),
+        reasoning=first_int(flat, REASONING_KEYS),
         cache_hit=cache_hit,
+        cache_write=cache_write,
         source=source,
     )
     if not usage.counted():
@@ -190,7 +281,7 @@ def best_usage(blobs: list[Any]) -> Usage:
         nonlocal best, best_score
         if isinstance(node, dict):
             parsed = usage_from_mapping(node)
-            score = parsed.billed() + parsed.cache_hit
+            score = parsed.score()
             if score > best_score:
                 best = parsed
                 best_score = score

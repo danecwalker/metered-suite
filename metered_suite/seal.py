@@ -39,6 +39,7 @@ def seal_package(
                     "output": int(raw.get("usage", {}).get("output") or 0),
                     "reasoning": int(raw.get("usage", {}).get("reasoning") or 0),
                     "cacheHit": int(raw.get("usage", {}).get("cacheHit") or 0),
+                    "cacheWrite": int(raw.get("usage", {}).get("cacheWrite") or 0),
                 },
                 "providerUsage": raw.get("providerUsage"),
                 "passed": passed,
@@ -53,6 +54,7 @@ def seal_package(
         "output": sum(task["usage"]["output"] for task in tasks),
         "reasoning": sum(task["usage"]["reasoning"] for task in tasks),
         "cacheHit": sum(task["usage"]["cacheHit"] for task in tasks),
+        "cacheWrite": sum(task["usage"]["cacheWrite"] for task in tasks),
     }
     draft = {
         "format": EVAL_FORMAT,
