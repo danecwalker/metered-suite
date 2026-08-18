@@ -173,6 +173,24 @@ def _verifier_brief(output: str) -> str:
     return ""
 
 
+def _attempt_label(max_attempts: int) -> str:
+    return "until pass" if max_attempts <= 0 else str(max_attempts)
+
+
+def _follow_up_prompt(task: OfficialTask, attempt: int, previous: str) -> str:
+    why = _verifier_brief(previous)
+    extra = f"Failed checks: {why}\n" if why else ""
+    return (
+        f"{task.prompt}\n\n---\n"
+        f"Attempt {attempt}. Same checkout as last time. Do not start over.\n"
+        "The hidden verifier still fails. A complete finish is required.\n"
+        f"{extra}"
+        f"Previous verifier output:\n{previous}\n"
+        "Fix the existing code until the hidden verifier returns "
+        '{"ok":true,"reward":1,"failed":0}.\n'
+    )
+
+
 def _keep_attempt(out_dir: Path, task_id: str, attempt: int, workspace: Path, output: str) -> None:
     dest = out_dir / f"{task_id}.last"
     dest.mkdir(parents=True, exist_ok=True)
@@ -205,7 +223,7 @@ def run_suite(root: Path | None = None) -> Path:
     lock = suite_lock(tasks)
     started = datetime.now(timezone.utc).isoformat()
     raw_tasks: list[dict] = []
-    max_attempts = int(cfg.get("MAX_ATTEMPTS") or 3)
+    max_attempts = int(cfg["MAX_ATTEMPTS"]) if cfg.get("MAX_ATTEMPTS") is not None else 0
     timeout_sec = int(cfg.get("TIMEOUT_SEC") or 45 * 60)
     spec = resolve_harness(str(cfg["HARNESS"]))
     sku = str(cfg["MODEL"]).strip()
@@ -216,7 +234,7 @@ def run_suite(root: Path | None = None) -> Path:
     effort = str(cfg.get("EFFORT") or "default")
     _log(
         f"{spec['slug']}  {sku}  {effort}  {len(tasks)} tasks  "
-        f"{max_attempts} attempts  timeout {timeout_sec}s"
+        f"{_attempt_label(max_attempts)}  timeout {timeout_sec}s"
     )
 
     for index, task in enumerate(tasks, start=1):
@@ -224,27 +242,31 @@ def run_suite(root: Path | None = None) -> Path:
         output = ""
         attempts = 0
         passed = False
+        workspace: Path | None = None
         _log(f"task {index}/{len(tasks)}  {task.id}")
-        for attempt in range(1, max_attempts + 1):
-            attempts = attempt
-            _log(f"  attempt {attempt}/{max_attempts}")
-            workspace = Path(tempfile.mkdtemp(prefix=f"metered-{task.id}-"))
-            try:
+        try:
+            attempt = 0
+            while True:
+                attempt += 1
+                if max_attempts > 0 and attempt > max_attempts:
+                    break
+                attempts = attempt
+                _log(f"  attempt {attempt}/{_attempt_label(max_attempts)}")
+                if workspace is None:
+                    workspace = Path(tempfile.mkdtemp(prefix=f"metered-{task.id}-"))
+                    if task.task_dir is not None:
+                        try:
+                            seed_workspace(task.task_dir, workspace)
+                        except SandboxError as error:
+                            raise SystemExit(f"sandbox: {error}") from error
+                    _init_workspace(workspace)
+                prompt = (
+                    task.prompt
+                    if attempt == 1
+                    else _follow_up_prompt(task, attempt, output)
+                )
                 prompt_file = workspace / "instruction.md"
-                prompt = task.prompt
-                if attempt > 1:
-                    prompt = (
-                        f"{task.prompt}\n\n---\nAttempt {attempt}. "
-                        "The previous patch failed the hidden verifier.\n"
-                        f"Previous verifier output:\n{output}\n"
-                    )
-                if task.task_dir is not None:
-                    try:
-                        seed_workspace(task.task_dir, workspace)
-                    except SandboxError as error:
-                        raise SystemExit(f"sandbox: {error}") from error
                 prompt_file.write_text(prompt, encoding="utf-8")
-                _init_workspace(workspace)
                 flags = list(cfg.get("FLAGS") or [])
                 command = build_command(
                     spec,
@@ -255,11 +277,12 @@ def run_suite(root: Path | None = None) -> Path:
                     effort,
                 )
                 _log(f"  {_command_preview(command, prompt)}")
-                if task.task_dir is not None:
+                if task.task_dir is not None and attempt == 1:
                     _log(f"  sandbox {describe_sandbox(command)}")
                 env = os.environ.copy()
                 env["METERED_TASK"] = task.id
                 env["METERED_WORKSPACE"] = str(workspace)
+                env["METERED_ATTEMPT"] = str(attempt)
                 stdout = ""
                 stderr = ""
                 timed_out = False
@@ -320,7 +343,11 @@ def run_suite(root: Path | None = None) -> Path:
                     _keep_attempt(root / "out", task.id, attempt, workspace, output)
                 if passed:
                     break
-            finally:
+                if max_attempts > 0 and attempt >= max_attempts:
+                    break
+                _log("  same checkout, continuing until pass")
+        finally:
+            if workspace is not None:
                 shutil.rmtree(workspace, ignore_errors=True)
         raw_tasks.append(
             {

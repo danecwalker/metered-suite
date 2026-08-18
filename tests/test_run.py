@@ -105,7 +105,7 @@ class RunProgressTests(unittest.TestCase):
                 path = run_suite(root)
 
             text = buf.getvalue()
-            self.assertIn("grok  grok-4.6  xhigh  2 tasks  2 attempts", text)
+            self.assertIn("grok  grok-4.6  xhigh  2 tasks  2", text)
             self.assertIn("task 1/2  normalize", text)
             self.assertIn("task 2/2  fertility", text)
             self.assertIn("  attempt 1/2", text)
@@ -162,6 +162,61 @@ class RunProgressTests(unittest.TestCase):
             self.assertNotIn("—", text)
             self.assertNotIn("$ / M ET", text)
             self.assertNotIn("secret task prompt", text)
+
+    def test_keeps_same_checkout_until_pass(self) -> None:
+        tasks = [
+            OfficialTask(
+                id="queue",
+                label="queue",
+                prompt="Fix the queue",
+                prompt_hash="c",
+                expected={"ok": True},
+                work_chars=10,
+            ),
+        ]
+        seen: list[Path] = []
+
+        def fake_run(command, cwd=None, **kwargs):
+            name = Path(command[0]).name if command else ""
+            if name == "git":
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            path = Path(cwd)
+            seen.append(path)
+            answer = path / "answer.json"
+            if not answer.exists():
+                answer.write_text('{"ok": false}', encoding="utf-8")
+            else:
+                answer.write_text('{"ok": true}', encoding="utf-8")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"input": 4, "output": 1, "reasoning": 0, "cacheHit": 0}),
+                stderr="",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").write_text(
+                'HARNESS = "grok"\nMODEL = "grok-4.6"\nEFFORT = "xhigh"\nMAX_ATTEMPTS = 0\n',
+                encoding="utf-8",
+            )
+            buf = StringIO()
+            with (
+                patch("metered_suite.run.load_tasks", return_value=tasks),
+                patch("metered_suite.run.subprocess.run", side_effect=fake_run),
+                redirect_stdout(buf),
+            ):
+                run_suite(root)
+
+            text = buf.getvalue()
+            self.assertIn("until pass", text)
+            self.assertIn("  attempt 1/until pass", text)
+            self.assertIn("  attempt 2/until pass", text)
+            self.assertIn("  same checkout, continuing until pass", text)
+            self.assertIn("queue: pass after 2 attempt(s)", text)
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(seen[0], seen[1])
+            self.assertNotIn("Fix the queue", text)
 
 
 if __name__ == "__main__":

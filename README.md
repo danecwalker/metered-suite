@@ -40,7 +40,7 @@ Same two-container split as DeepSWE v1.1 / Pier:
 
 Docker is required. The first run builds the two images. Set `METERED_REBUILD=1` to rebuild them.
 
-Optional in `main.py`: `TIMEOUT_SEC` (default 45 minutes) and `MAX_ATTEMPTS`. After each attempt the last patch and hidden-test log land in `out/<task>.last/`.
+Optional in `main.py`: `TIMEOUT_SEC` (default 45 minutes per attempt) and `MAX_ATTEMPTS`. `MAX_ATTEMPTS = 0` (the default) keeps the same checkout and calls the harness again until the hidden verifier passes. A positive number is a hard cap. After each attempt the last patch and hidden-test log land in `out/<task>.last/`. `$ / MU` is only defined on a pass.
 
 While the harness is running the suite prints file writes, short CLI events, and a `still running` heartbeat so a long think is not a silent hang.
 

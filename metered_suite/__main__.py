@@ -19,7 +19,8 @@ def main(argv: list[str] | None = None) -> None:
             "  python3 -m metered_suite        run after editing main.py (needs Docker)\n"
             "  python3 -m metered_suite lock   rewrite lock.json (maintainers)\n"
             "\n"
-            "main.py may set TIMEOUT_SEC (seconds) and MAX_ATTEMPTS.\n",
+            "main.py may set TIMEOUT_SEC (seconds) and MAX_ATTEMPTS\n"
+            "(0 = keep going in the same checkout until the job passes).\n",
             flush=True,
         )
         return

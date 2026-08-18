@@ -5,5 +5,5 @@ HARNESS = "qwen"  # claude | chatgpt | gemini | grok | qwen | kimi | deepseek | 
 MODEL = "qwen3.8-max-preview"  # SKU the catalog already knows, unless you have high reputation
 EFFORT = "max"
 FLAGS = ["--yolo"]
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 0  # 0 = keep the same checkout until the hidden verifier passes
 TIMEOUT_SEC = 45 * 60
