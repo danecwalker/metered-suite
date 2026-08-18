@@ -1,89 +1,27 @@
 {
-  "suiteVersion": "work-2026.08-py1",
-  "suiteHash": "c76899630d08e50a401df0ed684c6c45c57a1bc69b60c8f8d66ce47c8db1cae0",
-  "workChars": 1930,
-  "workMu": 482.5,
+  "suiteVersion": "work-2026.08-py2",
+  "suiteHash": "9eb62751f7da9e445d79b04972ea6c069a7c333df9172a19349192df88602fca",
+  "workChars": 5371,
+  "workMu": 1342.75,
   "tasks": [
     {
-      "id": "normalize",
-      "label": "Normalize",
-      "prompt": "Write `answer.json` in this workspace.\n\nNormalize this exact string as Metered does: Unicode NFC, then turn every CR or CRLF into LF. Count Unicode scalar values in the result. Metered Units are that count divided by 4.\n\nThe string, between the lines that say BEGIN and END, including the newline that ends the last visible line:\n\nBEGIN\ncafe\u0301\nEND\n\nThe word is c-a-f-e plus combining acute U+0301, then one newline.\n\n`answer.json` must be:\n\n{\n  \"scalars\": <integer>,\n  \"mu\": <number>\n}\n",
-      "promptHash": "39db849bdf32714eded27b39d12e7a452ce417e39e4da7ae3114ae8efe2a5ee6",
+      "id": "queue",
+      "label": "Durable work queue",
+      "prompt": "You are in a checkout of `durableq`, a small durable work queue.\n\nThe public unit tests fail. Fix the library so this exits 0:\n\n```\npython3 -m unittest discover -s tests -v\n```\n\nDo not edit files under `tests/`. After you exit, a hidden verifier runs in a fresh container on a git patch of your work. Hardcoding the public fixtures will fail.\n\nRequired behavior:\n\n- `Queue.enqueue(body, delay_ms=0)` returns a message id and stores the body. `delay_ms` keeps the message unleaseable until that many milliseconds have passed.\n- `Queue.lease(visibility_ms)` returns the oldest ready message (`available_at`, then `id`) whose `available_at <= now`, or `None`. The message stays invisible until `now + visibility_ms`. If that window ends without `ack`, the message becomes ready again and `attempts` increases by 1.\n- `Queue.ack(id, lease_id)` deletes the message only when `lease_id` matches the active lease.\n- `Queue.nack(id, lease_id)` returns the message to ready immediately and increases `attempts` by 1, only when `lease_id` matches.\n- After `max_attempts` failed attempts (visibility expiry or nack), the message is dead: `lease` must not return it. `dead_count()` reports how many are dead.\n- `ready_count()` is messages that can be leased now. `leased_count()` is currently invisible messages.\n- If the queue was constructed with a `path`, state must survive a new `Queue(path=...)` process.\n- Time comes from the optional `clock` callable (milliseconds). Tests inject it. Do not call `time.time` if `clock` was provided.\n\nPublic tests cover a subset of this. The hidden verifier covers the rest.\n",
+      "promptHash": "f59ba2704bb137c5fc37c1c0579f8a21da4e939956facadd26edbdd6eb23ef9e",
       "check": "extract-json",
       "expectedKeys": [
-        "mu",
-        "scalars"
+        "failed",
+        "ok",
+        "reward"
       ],
       "expectedJson": {
-        "mu": 1.25,
-        "scalars": 5
+        "failed": 0,
+        "ok": true,
+        "reward": 1
       },
       "mustInclude": null,
-      "workChars": 507
-    },
-    {
-      "id": "fertility",
-      "label": "Fertility",
-      "prompt": "Write `answer.json` in this workspace.\n\nA basket is 400000 Unicode characters after NFC+LF. A model spent 200000 native tokens on that basket. List price is $2.50 per million native tokens.\n\n1 MU = 4 characters.\nFertility = native tokens / MU.\nTrue price = list price \u00d7 fertility.\n\n{\n  \"fertility\": <number>,\n  \"true_price\": <number>\n}\n",
-      "promptHash": "7b835e57b339d28430deda5b89f3730395f858e3a2d49afd33c4fb1b0904156c",
-      "check": "extract-json",
-      "expectedKeys": [
-        "fertility",
-        "true_price"
-      ],
-      "expectedJson": {
-        "fertility": 2,
-        "true_price": 5
-      },
-      "mustInclude": null,
-      "workChars": 366
-    },
-    {
-      "id": "ledger",
-      "label": "Ledger",
-      "prompt": "Write `answer.json` in this workspace.\n\nBill this run in US dollars.\n\n- input tokens: 1000000\n- output tokens: 100000\n- reasoning / thinking tokens: 50000\n- cache-hit tokens: 0\n- list input: $3 per million\n- list output: $15 per million\n- thinking is billed at the output rate\n- cache-hit tokens, when present, are subtracted from input before the input rate. Here they are 0.\n\n{\n  \"usd\": <number>\n}\n",
-      "promptHash": "2d6423f5a4dbe097b0310325d268fc82fe02503dd750dd069bb366581be4d919",
-      "check": "extract-json",
-      "expectedKeys": [
-        "usd"
-      ],
-      "expectedJson": {
-        "usd": 5.25
-      },
-      "mustInclude": null,
-      "workChars": 412
-    },
-    {
-      "id": "rank",
-      "label": "Rank",
-      "prompt": "Write `answer.json` in this workspace.\n\nThree stacks ran the same official 5-task suite.\n\n- A: passed 1/5, bill $0.10\n- B: passed 5/5, bill $8.00\n- C: passed 5/5, bill $3.00\n\nMetered only ranks $ / M ET when every official task passed. Incomplete runs are not cheaper.\n\nWhich stack ranks first?\n\n{\n  \"winner\": \"A\" | \"B\" | \"C\"\n}\n",
-      "promptHash": "5ffd365c1f9c189969086ad3519cb17ff1b2f6b6dc7d8ea377b9140aea0d3ba4",
-      "check": "extract-json",
-      "expectedKeys": [
-        "winner"
-      ],
-      "expectedJson": {
-        "winner": "C"
-      },
-      "mustInclude": null,
-      "workChars": 342
-    },
-    {
-      "id": "extract",
-      "label": "Extract",
-      "prompt": "Write `answer.json` in this workspace.\n\nFrom this log, extract the model id and the list input price as a number.\n\n```\nok  model=gpt-5.4  harness=api\nsticker in=$2.50 / M\nsticker out=$15\nnote: do not invent a $ / M ET\n```\n\n{\n  \"model\": <string>,\n  \"list_in\": <number>\n}\n",
-      "promptHash": "061b009adfb8fb4ba590067cb399d83ad2a7187b1125510858dae294667a6eb9",
-      "check": "extract-json",
-      "expectedKeys": [
-        "list_in",
-        "model"
-      ],
-      "expectedJson": {
-        "list_in": 2.5,
-        "model": "gpt-5.4"
-      },
-      "mustInclude": null,
-      "workChars": 303
+      "workChars": 5371
     }
   ]
 }

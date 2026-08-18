@@ -11,9 +11,17 @@ from pathlib import Path
 from .adapters import adapter_for
 from .hash import SUITE_VERSION
 from .identity import build_command, resolve_harness, sku_fits
+from .sandbox import (
+    SandboxError,
+    collect_patch,
+    describe_sandbox,
+    grade_patch,
+    run_agent,
+    seed_workspace,
+)
 from .score import score_json
 from .seal import seal_package
-from .tasks import load_tasks, suite_lock
+from .tasks import OfficialTask, load_tasks, suite_lock
 from .usage import Usage, read_sidecar, write_usage
 
 
@@ -27,6 +35,82 @@ def _slug(name: str) -> str:
     return "".join(out).strip("-") or "model"
 
 
+def _log(message: str) -> None:
+    print(message, flush=True)
+
+
+def _command_preview(command: list[str], prompt: str = "") -> str:
+    """Short argv for progress. Never include the prompt body."""
+    if not command:
+        return ""
+    prompt_flags = {"--prompt", "--single", "-p"}
+    parts: list[str] = []
+    skip_next = False
+    for index, arg in enumerate(command):
+        if skip_next:
+            skip_next = False
+            continue
+        if index == 0:
+            parts.append(os.path.basename(arg))
+            continue
+        if prompt and arg == prompt:
+            continue
+        if arg in prompt_flags:
+            parts.append(arg)
+            nxt = command[index + 1] if index + 1 < len(command) else ""
+            if nxt and not nxt.startswith("-"):
+                skip_next = True
+            continue
+        if arg.startswith("--prompt=") or arg.startswith("--single="):
+            parts.append(arg.split("=", 1)[0])
+            continue
+        if "\n" in arg or len(arg) > 96:
+            continue
+        parts.append(arg)
+    return " ".join(parts)
+
+
+def _usage_brief(usage: Usage) -> str:
+    return (
+        f"in={usage.input} out={usage.output} "
+        f"reasoning={usage.reasoning} cacheHit={usage.cache_hit}"
+    )
+
+
+def _one_line(text: str, limit: int = 220) -> str:
+    line = " ".join((text or "").split())
+    if len(line) <= limit:
+        return line
+    return line[: limit - 3] + "..."
+
+
+def _cli_error_brief(stdout: str, stderr: str) -> str:
+    from .usage import json_blobs
+
+    for blob in json_blobs(stderr) + json_blobs(stdout):
+        if not isinstance(blob, dict):
+            continue
+        kind = str(blob.get("type") or "")
+        if kind in {"error", "turn.failed"}:
+            message = blob.get("message") or blob.get("error") or blob
+            if isinstance(message, dict):
+                message = message.get("message") or message.get("error") or message
+            text = _one_line(str(message))
+            if text:
+                return text
+        payload = blob.get("payload")
+        if isinstance(payload, dict) and payload.get("type") in {"error", "stream_error"}:
+            text = _one_line(str(payload.get("message") or payload))
+            if text:
+                return text
+    for raw in (stderr, stdout):
+        for line in reversed((raw or "").splitlines()):
+            text = _one_line(line.strip())
+            if text:
+                return text
+    return ""
+
+
 def _load_user_config(root: Path) -> dict:
     namespace: dict = {}
     exec((root / "main.py").read_text(encoding="utf-8"), namespace)
@@ -38,6 +122,8 @@ def _load_user_config(root: Path) -> dict:
 
 
 def _init_workspace(workspace: Path) -> None:
+    if (workspace / ".git").exists():
+        return
     git = shutil.which("git")
     if not git:
         return
@@ -56,6 +142,48 @@ def _read_output(workspace: Path) -> str:
         if path.exists():
             return path.read_text(encoding="utf-8")
     return ""
+
+
+def _score_attempt(task: OfficialTask, workspace: Path) -> str:
+    if task.task_dir is None:
+        return _read_output(workspace)
+    try:
+        patch = collect_patch(workspace)
+        _log(f"  collected patch ({len(patch.splitlines())} lines)")
+        report = grade_patch(task.task_dir, patch, workspace / "_grade")
+    except SandboxError as error:
+        _log(f"  sandbox: {error}")
+        return json.dumps({"ok": False, "reward": 0, "failed": 1, "error": str(error)})
+    return json.dumps(report, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _verifier_brief(output: str) -> str:
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return _one_line(output)
+    if not isinstance(data, dict):
+        return ""
+    errors = data.get("errors")
+    if isinstance(errors, list) and errors:
+        return "failed " + ", ".join(str(item) for item in errors[:8])
+    err = data.get("error")
+    if err:
+        return _one_line(str(err))
+    return ""
+
+
+def _keep_attempt(out_dir: Path, task_id: str, attempt: int, workspace: Path, output: str) -> None:
+    dest = out_dir / f"{task_id}.last"
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "reward.json").write_text(output + ("" if output.endswith("\n") else "\n"), encoding="utf-8")
+    (dest / "attempt.txt").write_text(f"{attempt}\n", encoding="utf-8")
+    incoming = workspace / "_grade" / "in" / "changes.patch"
+    log = workspace / "_grade" / "out" / "unittest.log"
+    if incoming.exists():
+        shutil.copy2(incoming, dest / "changes.patch")
+    if log.exists():
+        shutil.copy2(log, dest / "unittest.log")
 
 
 def _collect_usage(slug: str, stdout: str, stderr: str, workspace: Path) -> Usage:
@@ -78,20 +206,28 @@ def run_suite(root: Path | None = None) -> Path:
     started = datetime.now(timezone.utc).isoformat()
     raw_tasks: list[dict] = []
     max_attempts = int(cfg.get("MAX_ATTEMPTS") or 3)
+    timeout_sec = int(cfg.get("TIMEOUT_SEC") or 45 * 60)
     spec = resolve_harness(str(cfg["HARNESS"]))
     sku = str(cfg["MODEL"]).strip()
     if not sku_fits(spec, sku):
         raise SystemExit(
             f"MODEL {sku} cannot be filed under the {spec['slug']} harness."
         )
+    effort = str(cfg.get("EFFORT") or "default")
+    _log(
+        f"{spec['slug']}  {sku}  {effort}  {len(tasks)} tasks  "
+        f"{max_attempts} attempts  timeout {timeout_sec}s"
+    )
 
-    for task in tasks:
+    for index, task in enumerate(tasks, start=1):
         usage = Usage()
         output = ""
         attempts = 0
         passed = False
+        _log(f"task {index}/{len(tasks)}  {task.id}")
         for attempt in range(1, max_attempts + 1):
             attempts = attempt
+            _log(f"  attempt {attempt}/{max_attempts}")
             workspace = Path(tempfile.mkdtemp(prefix=f"metered-{task.id}-"))
             try:
                 prompt_file = workspace / "instruction.md"
@@ -99,9 +235,14 @@ def run_suite(root: Path | None = None) -> Path:
                 if attempt > 1:
                     prompt = (
                         f"{task.prompt}\n\n---\nAttempt {attempt}. "
-                        "The previous answer.json failed the official check.\n"
-                        f"Previous answer:\n{output}\n"
+                        "The previous patch failed the hidden verifier.\n"
+                        f"Previous verifier output:\n{output}\n"
                     )
+                if task.task_dir is not None:
+                    try:
+                        seed_workspace(task.task_dir, workspace)
+                    except SandboxError as error:
+                        raise SystemExit(f"sandbox: {error}") from error
                 prompt_file.write_text(prompt, encoding="utf-8")
                 _init_workspace(workspace)
                 flags = list(cfg.get("FLAGS") or [])
@@ -111,37 +252,72 @@ def run_suite(root: Path | None = None) -> Path:
                     flags,
                     prompt,
                     prompt_file,
-                    str(cfg.get("EFFORT") or "default"),
+                    effort,
                 )
+                _log(f"  {_command_preview(command, prompt)}")
+                if task.task_dir is not None:
+                    _log(f"  sandbox {describe_sandbox(command)}")
                 env = os.environ.copy()
                 env["METERED_TASK"] = task.id
                 env["METERED_WORKSPACE"] = str(workspace)
                 stdout = ""
                 stderr = ""
+                timed_out = False
+                exit_code: int | None = None
                 try:
-                    proc = subprocess.run(
-                        command,
-                        cwd=workspace,
-                        env=env,
-                        check=False,
-                        timeout=60 * 20,
-                        capture_output=True,
-                        text=True,
-                    )
+                    if task.task_dir is not None:
+                        proc = run_agent(
+                            command,
+                            workspace=workspace,
+                            env=env,
+                            timeout=timeout_sec,
+                            task_dir=task.task_dir,
+                        )
+                    else:
+                        proc = subprocess.run(
+                            command,
+                            cwd=workspace,
+                            env=env,
+                            check=False,
+                            timeout=timeout_sec,
+                            capture_output=True,
+                            text=True,
+                        )
                     stdout = proc.stdout or ""
                     stderr = proc.stderr or ""
+                    exit_code = proc.returncode
                 except FileNotFoundError as error:
                     raise SystemExit(
                         f"harness command not found: {command[0]}\n"
                         "Install that CLI, or change HARNESS in main.py."
                     ) from error
                 except subprocess.TimeoutExpired as error:
+                    timed_out = True
                     stdout = (error.stdout or "") if isinstance(error.stdout, str) else ""
                     stderr = (error.stderr or "") if isinstance(error.stderr, str) else ""
                 turn_usage = _collect_usage(spec["slug"], stdout, stderr, workspace)
                 usage = usage.add(turn_usage)
-                output = _read_output(workspace)
+                if timed_out:
+                    status = "  timeout"
+                else:
+                    status = f"  exit {exit_code}"
+                if turn_usage.counted():
+                    status = f"{status}  {_usage_brief(turn_usage)}"
+                hint = _cli_error_brief(stdout, stderr)
+                if hint and (timed_out or exit_code not in {0, None} or not turn_usage.counted()):
+                    status = f"{status}  {hint}"
+                _log(status)
+                output = _score_attempt(task, workspace)
                 passed = score_json(output, task.expected)
+                why = _verifier_brief(output)
+                if passed:
+                    _log("  verifier pass")
+                elif why:
+                    _log(f"  verifier fail  {why}")
+                else:
+                    _log("  verifier fail")
+                if task.task_dir is not None:
+                    _keep_attempt(root / "out", task.id, attempt, workspace, output)
                 if passed:
                     break
             finally:
@@ -157,8 +333,8 @@ def run_suite(root: Path | None = None) -> Path:
         )
         note = ""
         if not usage.counted():
-            note = " — no token usage from the CLI; this task cannot define $ / M ET"
-        print(f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s){note}")
+            note = " - no token usage from the CLI; this task cannot define $ / MU"
+        _log(f"{task.id}: {'pass' if passed else 'fail'} after {attempts} attempt(s){note}")
 
     finished = datetime.now(timezone.utc).isoformat()
     stack = {
@@ -169,7 +345,7 @@ def run_suite(root: Path | None = None) -> Path:
         "harnessSlug": spec["slug"],
         "provider": "",
         "sku": sku,
-        "setting": str(cfg["EFFORT"]),
+        "setting": effort,
         "listInput": 0,
         "listOutput": 0,
     }
@@ -187,16 +363,16 @@ def run_suite(root: Path | None = None) -> Path:
     name = f"{stack['modelSlug']}-{stack['harnessSlug']}-{stack['setting']}.metered.json"
     path = out_dir / name
     path.write_text(json.dumps(pkg, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {path}")
-    print(f"passed {pkg['totals']['passed']}/{pkg['totals']['tasks']}")
+    _log(f"wrote {path}")
+    _log(f"passed {pkg['totals']['passed']}/{pkg['totals']['tasks']}")
     billed = (
         int(pkg["totals"]["input"])
         + int(pkg["totals"]["output"])
         + int(pkg["totals"]["reasoning"])
     )
     if billed <= 0:
-        print(
+        _log(
             "warning: package has no token counts. "
-            "Metered will not rank it as $ / M ET."
+            "Metered will not rank it as $ / MU."
         )
     return path

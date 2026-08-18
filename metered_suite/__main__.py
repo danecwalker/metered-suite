@@ -14,17 +14,20 @@ def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] in {"-h", "--help", "help"}:
         print(
-            "metered-suite — official jobs for Metered pricing.\n"
+            "metered-suite - official jobs for Metered pricing.\n"
             "\n"
-            "  python3 -m metered_suite        run after editing main.py\n"
+            "  python3 -m metered_suite        run after editing main.py (needs Docker)\n"
             "  python3 -m metered_suite lock   rewrite lock.json (maintainers)\n"
+            "\n"
+            "main.py may set TIMEOUT_SEC (seconds) and MAX_ATTEMPTS.\n",
+            flush=True,
         )
         return
     if args and args[0] == "lock":
         lock = suite_lock()
         path = ROOT / "lock.json"
         path.write_text(json.dumps(lock, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {path}  {lock['suiteVersion']}  {lock['suiteHash'][:16]}…")
+        print(f"wrote {path}  {lock['suiteVersion']}  {lock['suiteHash'][:16]}…", flush=True)
         return
     run_suite(ROOT)
 

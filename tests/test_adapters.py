@@ -41,6 +41,20 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(cmd[:4], ["codex", "exec", "--json", "--skip-git-repo-check"])
         self.assertIn("model_reasoning_effort=medium", cmd)
 
+    def test_qwen_uses_stream_json_and_yolo(self) -> None:
+        cmd = build_command(
+            resolve_harness("qwen"),
+            "qwen3.8-max-preview",
+            ["--yolo"],
+            "prompt",
+            Path("instruction.md"),
+            "max",
+        )
+        self.assertEqual(cmd[0], "qwen")
+        self.assertIn("stream-json", cmd)
+        self.assertIn("--yolo", cmd)
+        self.assertIn("qwen3.8-max-preview", cmd)
+
     def test_kimi_uses_stream_json(self) -> None:
         cmd = build_command(
             resolve_harness("kimi"),
@@ -148,6 +162,29 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(usage.output, 122)
         self.assertEqual(usage.reasoning, 9)
         self.assertEqual(usage.cache_hit, 24448)
+
+    def test_chatgpt_token_count_event(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 120000,
+                            "cached_input_tokens": 8000,
+                            "output_tokens": 40,
+                            "reasoning_output_tokens": 12,
+                        }
+                    },
+                },
+            }
+        )
+        usage = parse_usage("chatgpt", raw)
+        self.assertEqual(usage.input, 120000)
+        self.assertEqual(usage.output, 40)
+        self.assertEqual(usage.reasoning, 12)
+        self.assertEqual(usage.cache_hit, 8000)
 
     def test_opencode_sums_step_finish(self) -> None:
         lines = "\n".join(

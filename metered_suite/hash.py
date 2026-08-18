@@ -9,7 +9,7 @@ from typing import Any
 
 EVAL_FORMAT = "metered-eval/1"
 EVALUATOR_VERSION = "0.3.0"
-SUITE_VERSION = "work-2026.08-py1"
+SUITE_VERSION = "work-2026.08-py2"
 CHARS_PER_MU = 4
 
 

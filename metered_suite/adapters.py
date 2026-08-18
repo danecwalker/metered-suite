@@ -75,7 +75,7 @@ def _grok_command(
 def _qwen_command(
     binary: str, model: str, flags: list[str], prompt: str, prompt_file: Path, effort: str
 ) -> list[str]:
-    cmd = [binary, "--prompt", prompt, "--model", model, "--output-format", "json"]
+    cmd = [binary, "--prompt", prompt, "--model", model, "--output-format", "stream-json"]
     cmd.extend(flags)
     return cmd
 
@@ -178,6 +178,21 @@ def parse_chatgpt(stdout: str, stderr: str, workspace: Path) -> Usage:
     last = _last_typed(
         blobs, {"turn.completed"}, lambda blob: usage_from_mapping(blob.get("usage") or blob)
     )
+    if last.counted():
+        return last
+    for blob in blobs:
+        if not isinstance(blob, dict):
+            continue
+        payload = blob.get("payload") if blob.get("type") == "event_msg" else blob
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("type") != "token_count":
+            continue
+        info = payload.get("info") if isinstance(payload.get("info"), dict) else payload
+        total = info.get("total_token_usage") if isinstance(info, dict) else None
+        parsed = usage_from_mapping(total or info or payload)
+        if parsed.counted():
+            last = parsed
     return last if last.counted() else best_usage(blobs)
 
 

@@ -18,10 +18,23 @@ class OfficialTask:
     prompt_hash: str
     expected: dict
     work_chars: int
+    task_dir: Path | None = None
 
     @property
     def expected_json_text(self) -> str:
         return json.dumps(self.expected, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _walk_text(root: Path) -> str:
+    parts: list[str] = []
+    if not root.exists():
+        return ""
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        try:
+            parts.append(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError:
+            continue
+    return "\n".join(parts)
 
 
 def load_tasks() -> list[OfficialTask]:
@@ -30,7 +43,12 @@ def load_tasks() -> list[OfficialTask]:
         instruction = (folder / "instruction.md").read_text(encoding="utf-8")
         expected = json.loads((folder / "expected.json").read_text(encoding="utf-8"))
         expected_text = json.dumps(expected, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-        work_chars = character_count(instruction) + character_count(expected_text)
+        repo = folder / "environment" / "repo"
+        work_chars = (
+            character_count(instruction)
+            + character_count(expected_text)
+            + character_count(_walk_text(repo))
+        )
         tasks.append(
             OfficialTask(
                 id=folder.name.split("-", 1)[-1],
@@ -41,6 +59,7 @@ def load_tasks() -> list[OfficialTask]:
                 prompt_hash=content_hash(instruction),
                 expected=expected,
                 work_chars=work_chars,
+                task_dir=folder,
             )
         )
     if not tasks:

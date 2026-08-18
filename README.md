@@ -29,9 +29,20 @@ Do not edit `tasks/` or `metered_suite/`. Those files are the official jobs. The
 
 ## What is official
 
-Five tasks. Each one asks for an `answer.json`. Hidden expected values live next to the instruction. After your harness exits, the runner re-scores that file. Metered’s website re-scores it again against the same lock.
+One Harbor-shaped job (`durable-queue`), in the style of [DeepSWE](https://deepswe.datacurve.ai) ([arXiv:2607.07946](https://arxiv.org/abs/2607.07946)): a real repo, a written-from-scratch prompt, and a hidden verifier.
 
-`$ / M ET` needs every task to pass **and** real token counts from the harness adapter. Zero usage is not a $0 rank.
+Same two-container split as DeepSWE v1.1 / Pier:
+
+1. **Agent.** Workspace is copied out of `metered-suite-agent:py2` (repo + `base` commit only). Hidden tests and the reference solution never enter that tree. On Linux the harness CLI runs inside that container. On macOS the official CLIs are Darwin binaries, so the process stays on the host, jailed to that checkout; it still cannot see the grader.
+2. **Verifier.** After the CLI exits we collect a git patch and apply it in `metered-suite-verify:py2` with `--network none`. Held-out tests run there. The site re-scores the verifier JSON (`ok`, `reward`) against the lock.
+
+`$ / MU` needs the job to pass **and** real token counts from the harness adapter. Zero usage is not a $0 rank.
+
+Docker is required. The first run builds the two images. Set `METERED_REBUILD=1` to rebuild them.
+
+Optional in `main.py`: `TIMEOUT_SEC` (default 45 minutes) and `MAX_ATTEMPTS`. After each attempt the last patch and hidden-test log land in `out/<task>.last/`.
+
+While the harness is running the suite prints file writes, short CLI events, and a `still running` heartbeat so a long think is not a silent hang.
 
 | HARNESS | Binary | How we count tokens |
 | --- | --- | --- |
